@@ -47,6 +47,11 @@ Panel {
     if (gp.connected && gp.ip4 !== "") rows.push("address")
     if (gp.connected) rows.push("rediscover")
     if (gp.username !== "" || gp.hasSession) rows.push("signin", "forget")
+    if (gp.configured && gp.depsOk) {
+      rows.push("gw:auto")
+      for (var i = 0; i < gp.gatewayList.gateways.length; i++) rows.push("gw:" + i)
+      rows.push("gwrefresh")
+    }
     if (gp.configured && gp.everPolled && !gp.depsOk) rows.push("install")
     if (gp.configured) rows.push("logs")
     return rows
@@ -68,6 +73,18 @@ Panel {
     else if (row === "forget") openForget()
     else if (row === "install") installDeps()
     else if (row === "logs") gp.collectLogs()
+    else if (row === "gw:auto") selectGateway("")
+    else if (row === "gwrefresh") gp.refreshGateways()
+    else if (row.indexOf("gw:") === 0) {
+      var g = gp.gatewayList.gateways[parseInt(row.substring(3), 10)]
+      if (g) selectGateway(g.name)
+    }
+  }
+
+  function selectGateway(name) {
+    if (name === gp.gateway) return
+    saveSetting("gateway", name)
+    gp.flash(name === "" ? "Best available gateway" : "Preferred gateway: " + name)
   }
 
   function openForget() {
@@ -231,7 +248,7 @@ Panel {
     PanelKeyCatcher {
       id: keyCatcher
       anchors.fill: parent
-      blocked: gpPanel.forgetOpen || portalField.activeFocus || gatewayField.activeFocus
+      blocked: gpPanel.forgetOpen || portalField.activeFocus
       onMoveRequested: function(dx, dy) {
         if (!gpPanel.cursorActive) { gpPanel.cursorActive = true; return }
         if (dy !== 0) gpPanel.moveCursor(dy)
@@ -247,6 +264,7 @@ Panel {
         else if (k === "s") gp.signInAgain()
         else if (k === "n") gp.rediscover()
         else if (k === "l") gp.collectLogs()
+        else if (k === "g") gp.refreshGateways()
         else if (k === "f") gpPanel.openForget()
       }
 
@@ -629,6 +647,68 @@ Panel {
           }
 
           // ---------- Settings ----------
+          // ---------- Gateways ----------
+          PanelSeparator { visible: gatewaysSection.visible; foreground: gpPanel.foreground }
+
+          Section {
+            id: gatewaysSection
+            shown: gp.configured && gp.everPolled && gp.depsOk
+
+            PanelSectionHeader { text: "GATEWAYS"; foreground: gpPanel.foreground; fontFamily: gpPanel.fontFamily }
+
+            GatewayRow {
+              title: "Best available"
+              meta: gp.gatewayList.best !== "" ? "picks " + gp.gatewayList.best : (gp.gatewayList.gateways.length === 0 ? "portal decides" : "")
+              selected: gp.gateway === ""
+              hasCursor: gpPanel.cursorRow === "gw:auto"
+              onActivated: gpPanel.selectGateway("")
+            }
+
+            Repeater {
+              model: gp.gatewayList.gateways
+              GatewayRow {
+                required property var modelData
+                required property int index
+                title: modelData.description
+                meta: Model.gatewayMeta(modelData)
+                selected: gp.gateway === modelData.name
+                connectedHere: gp.connected && gp.gatewayHost === modelData.host
+                hasCursor: gpPanel.cursorRow === "gw:" + index
+                onActivated: gpPanel.selectGateway(modelData.name)
+              }
+            }
+
+            Button {
+              width: parent.width
+              iconText: ""
+              iconSpinning: gp.gatewaysBusy
+              text: gp.gatewayList.gateways.length === 0 ? "Fetch gateways from the portal" : "Refresh gateways"
+              fontSize: Style.font.bodySmall
+              foreground: gpPanel.foreground
+              fontFamily: gpPanel.fontFamily
+              bordered: true
+              hasCursor: gpPanel.cursorRow === "gwrefresh"
+              horizontalPadding: Style.spacing.controlPaddingX
+              verticalPadding: Style.spacing.controlPaddingY
+              onClicked: gp.refreshGateways()
+            }
+
+            Text {
+              textFormat: Text.PlainText
+              width: parent.width
+              text: gp.gatewaysError !== ""
+                ? gp.gatewaysError
+                : (gp.gatewayList.gateways.length === 0
+                    ? "Fetching signs in at the portal (the Google window may flash) and lists its gateways with priority and latency."
+                    : "Best available picks the highest priority, then the lowest latency. Click a gateway to prefer it.")
+              color: gp.gatewaysError !== "" ? gpPanel.urgent : gpPanel.foreground
+              opacity: gp.gatewaysError !== "" ? 0.9 : 0.55
+              font.family: gpPanel.fontFamily
+              font.pixelSize: Style.font.caption
+              wrapMode: Text.WordWrap
+            }
+          }
+
           // ---------- Host state ----------
           PanelSeparator { visible: hostStateSection.visible; foreground: gpPanel.foreground }
 
@@ -676,37 +756,6 @@ Panel {
             shown: gp.configured
 
             PanelSectionHeader { text: "SETTINGS"; foreground: gpPanel.foreground; fontFamily: gpPanel.fontFamily }
-
-            Row {
-              width: parent.width
-              spacing: Style.space(8)
-
-              Text {
-                textFormat: Text.PlainText
-                text: "Gateway"
-                color: gpPanel.dim
-                font.family: gpPanel.fontFamily
-                font.pixelSize: Style.font.bodySmall
-                anchors.verticalCenter: parent.verticalCenter
-                width: Style.space(70)
-              }
-
-              TextField {
-                id: gatewayField
-                width: parent.width - Style.space(70) - parent.spacing
-                foreground: gpPanel.foreground
-                placeholderText: "Portal default"
-                text: gp.gateway
-                verticalPadding: Style.space(4)
-                onEditingFinished: {
-                  var v = text.trim()
-                  if (v !== gp.gateway) gpPanel.saveSetting("gateway", v)
-                }
-                Keys.onPressed: function(event) {
-                  if (event.key === Qt.Key_Escape) { keyCatcher.forceActiveFocus(); event.accepted = true }
-                }
-              }
-            }
 
             Toggle {
               width: parent.width
@@ -782,6 +831,75 @@ Panel {
     visible: opacity > 0.01
     opacity: shown ? 1 : 0
     Behavior on opacity { NumberAnimation { duration: 160; easing.type: Easing.OutCubic } }
+  }
+
+  component GatewayRow: CursorSurface {
+    id: gatewayRow
+    property string title: ""
+    property string meta: ""
+    property bool selected: false
+    property bool connectedHere: false
+    signal activated()
+
+    width: parent ? parent.width : implicitWidth
+    implicitHeight: gwContent.implicitHeight + Style.space(10)
+    foreground: gpPanel.foreground
+    hasCursor: false
+
+    MouseArea {
+      anchors.fill: parent
+      hoverEnabled: true
+      cursorShape: Qt.PointingHandCursor
+      onClicked: gatewayRow.activated()
+    }
+
+    Row {
+      id: gwContent
+      anchors.left: parent.left
+      anchors.right: parent.right
+      anchors.margins: Style.space(8)
+      anchors.verticalCenter: parent.verticalCenter
+      spacing: Style.space(8)
+
+      Text {
+        textFormat: Text.PlainText
+        text: gatewayRow.selected ? "" : (gatewayRow.connectedHere ? "" : "")
+        color: gatewayRow.selected || gatewayRow.connectedHere ? gpPanel.foreground : gpPanel.dim
+        font.family: gpPanel.fontFamily
+        font.pixelSize: Style.font.bodySmall
+        width: Style.space(16)
+        anchors.verticalCenter: parent.verticalCenter
+        Behavior on color { ColorAnimation { duration: 120 } }
+      }
+
+      Column {
+        width: parent.width - Style.space(16) - parent.spacing
+        spacing: Style.space(2)
+        anchors.verticalCenter: parent.verticalCenter
+
+        Text {
+          textFormat: Text.PlainText
+          width: parent.width
+          text: gatewayRow.title
+          color: gpPanel.foreground
+          font.family: gpPanel.fontFamily
+          font.pixelSize: Style.font.body
+          font.bold: gatewayRow.selected
+          elide: Text.ElideRight
+        }
+
+        Text {
+          textFormat: Text.PlainText
+          visible: gatewayRow.meta !== ""
+          width: parent.width
+          text: gatewayRow.meta
+          color: gpPanel.dim
+          font.family: gpPanel.fontFamily
+          font.pixelSize: Style.font.caption
+          elide: Text.ElideMiddle
+        }
+      }
+    }
   }
 
   component InfoRow: CursorSurface {

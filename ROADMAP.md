@@ -99,10 +99,10 @@ The tunnel survives the network, and you can see what it negotiated.
 
 Pick where you land.
 
-- [ ] Portal config fetch (`getconfig.esp`) and gateway list
-- [ ] Manual gateway picker in the panel
-- [ ] Preferred gateway
-- [ ] Best Available: priority plus TLS latency probe
+- [x] Portal config fetch (`getconfig.esp`) and gateway list
+- [x] Manual gateway picker in the panel
+- [x] Preferred gateway
+- [x] Best Available: priority plus TLS latency probe
 
 ### v0.4 — Always-On
 

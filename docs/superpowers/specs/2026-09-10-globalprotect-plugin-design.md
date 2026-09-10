@@ -1,6 +1,6 @@
 # Omarchy GlobalProtect plugin — design
 
-Date: 2026-09-10 · Status: implemented (v0.1.0) (Brian gave blanket approval for decisions; every decision is logged below)
+Date: 2026-09-10 · Status: implemented (v0.1.0; decisions 19+ cover later releases, see ROADMAP.md) (Brian gave blanket approval for decisions; every decision is logged below)
 
 ## Goal
 
@@ -35,6 +35,9 @@ setting is enough), Windows/macOS.
 | 16 | **SAML happens at the gateway interface by default** (`authInterface: auto` probes `/ssl-vpn/prelogin.esp` first, then the portal), and openconnect runs with `--usergroup=gateway:prelogin-cookie`. | Verified against Brian's portal: portal login succeeded but the gateway demanded a second SAML cookie and the portal returned no reusable auth cookie (the deployment gp-saml-gui's `--gateway` flag exists for). |
 | 17 | The NM profile is a **system connection** with no `connection.permissions`. | nm-openconnect refuses private connections ("The 'openconnect' plugin doesn't support private connections"); the wheel + local polkit rule makes system connections prompt-free anyway. |
 | 18 | The tunnel interface is found by the VPN address (`ip -j addr`), not nmcli's `GENERAL.IP-IFACE`, which names the base device for VPNs. | Verified live: nmcli reported `enp7s0`; the tunnel is `vpn0`. |
+| 19 | **Log bundle and debug log (v0.2).** `collect-logs` tars status, deps, versions, the NM profile, the NetworkManager/openconnect journals, the debug log, and the HIP preview, all through `scrub_secrets`; `--debug` appends to `$XDG_STATE_HOME/omarchy-globalprotect/debug.log` (rotated at 1 MB) and call sites never pass cookies. | Matches the official client's collect-log without ever shipping a session cookie. |
+| 20 | **Gateway list comes from the portal's `getconfig.esp`** after a SAML sign-in at the portal interface (`gateways --refresh`), cached in `state.json`; refresh is explicit (panel button / `g`), latency is re-probed on every panel open. | The list needs portal auth; the persisted Google session makes the refresh a window that flashes. Verified live: portal `Client-VPN`, one gateway, HIP interval 3600, and a `portal-userauthcookie` that is now stored. |
+| 21 | **Best Available = highest priority, then lowest TLS handshake latency; manual-only gateways excluded.** An explicit `gateway` setting wins. In gateway-interface mode the choice sets the host for prelogin, the sign-in window, and `openconnect`; in portal mode it is passed as `--authgroup`. The free-text field became a picker. | Mirrors the official client's selection rule; keeps one setting key. |
 
 ## Architecture
 

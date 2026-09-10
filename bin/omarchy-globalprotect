@@ -38,6 +38,7 @@ PRELOGIN_PATHS = {"portal": "global-protect/prelogin.esp", "gateway": "ssl-vpn/p
 ESP_PORT = 4501  # GlobalProtect ESP-over-UDP; the HTTPS tunnel fallback uses 443
 DEBUG_LOG_MAX = 1024 * 1024
 BUNDLE_DIR = "omarchy-globalprotect-logs"
+OS_VERSIONS = {"Windows": "Microsoft Windows 10 Pro, 64-bit", "Linux": "Linux", "Mac": "Apple Mac OS X 13.0.0"}
 
 
 class PreloginError(Exception):
@@ -53,6 +54,10 @@ class Cancelled(Exception):
 
 
 class HipError(Exception):
+    pass
+
+
+class PortalConfigError(Exception):
     pass
 
 
@@ -233,6 +238,92 @@ def write_bundle(path, members):
             info.mode = 0o600
             tar.addfile(info, io.BytesIO(data))
     path.chmod(0o600)
+
+
+def gateway_host(name):
+    """The host part of a portal gateway entry name ("gw.example.com:443" -> "gw.example.com")."""
+    return re.sub(r":\d+$", "", str(name or "").strip())
+
+
+def parse_portal_config(xml_text):
+    """The parts of the portal's getconfig.esp policy we use: gateways, cookie, HIP interval."""
+    try:
+        root = ET.fromstring(xml_text)
+    except ET.ParseError as e:
+        raise PortalConfigError(f"Portal config is not valid XML ({e})")
+    if (root.findtext("status") or "").strip().lower() == "error":
+        raise PortalConfigError((root.findtext("msg") or "Portal rejected the config request").strip())
+    gateways = []
+    for entry in root.findall("./gateways/external/list/entry"):
+        name = (entry.get("name") or "").strip()
+        if not name:
+            continue
+        prio = (entry.findtext("priority") or "").strip()
+        if not prio:
+            rules = entry.findall("./priority-rule/entry")
+            anyrule = [r for r in rules if (r.get("name") or "").strip().lower() in ("any", "")]
+            pick = (anyrule or rules)[:1]
+            if pick:
+                prio = (pick[0].findtext("priority") or "").strip()
+        try:
+            priority = int(prio)
+        except ValueError:
+            priority = 0
+        gateways.append({
+            "name": name,
+            "host": gateway_host(name),
+            "description": (entry.findtext("description") or "").strip() or gateway_host(name),
+            "priority": priority,
+            "manual": (entry.findtext("manual") or "").strip().lower() == "yes",
+        })
+    try:
+        hip_interval = int((root.findtext("./hip-collection/hip-report-interval") or "0").strip() or 0)
+    except ValueError:
+        hip_interval = 0
+    return {
+        "gateways": gateways,
+        "portalUserAuthCookie": (root.findtext("portal-userauthcookie") or "").strip(),
+        "portalName": (root.findtext("portal-name") or "").strip(),
+        "hipInterval": hip_interval,
+    }
+
+
+def portal_config_body(portal, username, prelogin_cookie, client_os, hostname):
+    """The getconfig.esp form openconnect sends after a SAML prelogin (user + prelogin-cookie, no passwd)."""
+    os_name = CLIENT_OS.get(client_os, "Windows")
+    return urllib.parse.urlencode([
+        ("jnlpReady", "jnlpReady"), ("ok", "Login"), ("direct", "yes"), ("clientVer", "4100"), ("prot", "https:"),
+        ("internal", "no"), ("ipv6-support", "yes"), ("clientos", os_name), ("os-version", OS_VERSIONS[os_name]),
+        ("server", portal), ("computer", hostname), ("user", username), ("prelogin-cookie", prelogin_cookie),
+    ])
+
+
+def best_gateway(gateways, latencies):
+    """The official client's Best Available: highest priority first, then lowest TLS latency. Manual-only gateways are skipped."""
+    big = 10 ** 9
+    candidates = [g for g in gateways if not g.get("manual")]
+    if not candidates:
+        return ""
+
+    def key(g):
+        prio = int(g.get("priority") or 0)
+        lat = latencies.get(g.get("host", ""), latencies.get(g.get("name", "")))
+        lat_ok = isinstance(lat, (int, float)) and lat >= 0
+        return (prio if prio > 0 else big, lat if lat_ok else big, g.get("name", ""))
+
+    return min(candidates, key=key)["name"]
+
+
+def signin_host(portal, interface, gateway_name):
+    """Where the SAML sign-in happens: the chosen gateway for the gateway interface, else the portal."""
+    return gateway_host(gateway_name) if interface == "gateway" and gateway_name else portal
+
+
+def resolve_gateway_choice(setting, state):
+    """An explicit gateway setting wins; empty means Best Available from the cached list."""
+    if setting:
+        return setting
+    return best_gateway(state.get("gateways") or [], state.get("latencies") or {})
 
 
 def parse_hip_report(xml_text):
@@ -457,6 +548,46 @@ def resolve_host(host):
             if info[0] == family:
                 return info[4][0]
     return ""
+
+
+def fetch_portal_config(portal, username, prelogin_cookie, client_os, timeout=30):
+    body = portal_config_body(portal, username, prelogin_cookie, client_os, socket.gethostname()).encode()
+    url = f"https://{portal}/global-protect/getconfig.esp"
+    req = urllib.request.Request(url, data=body, method="POST",
+                                 headers={"User-Agent": "PAN GlobalProtect", "Content-Type": "application/x-www-form-urlencoded"})
+    debug_log(f"portal getconfig POST {url} user={username}")
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            cfg = parse_portal_config(resp.read().decode("utf-8", "replace"))
+    except urllib.error.HTTPError as e:
+        raise PortalConfigError(f"Portal refused the config request (HTTP {e.code})")
+    except (urllib.error.URLError, OSError) as e:
+        raise PortalConfigError(f"Could not reach {portal}: {getattr(e, 'reason', e)}")
+    debug_log(f"portal config: {len(cfg['gateways'])} gateways, portal-cookie={'yes' if cfg['portalUserAuthCookie'] else 'no'}, hip-interval={cfg['hipInterval']}")
+    return cfg
+
+
+def probe_latency(host, port=443, timeout=3.0):
+    """TLS handshake time to host:port in ms, -1 when unreachable. Trust is openconnect's job (fingerprint pin)."""
+    import ssl
+    ctx = ssl.create_default_context()
+    ctx.check_hostname = False
+    ctx.verify_mode = ssl.CERT_NONE
+    start = time.monotonic()
+    try:
+        with socket.create_connection((host, port), timeout=timeout) as sock, ctx.wrap_socket(sock, server_hostname=host):
+            return int((time.monotonic() - start) * 1000)
+    except (OSError, ssl.SSLError, ValueError):
+        return -1
+
+
+def probe_gateways(gateways):
+    from concurrent.futures import ThreadPoolExecutor
+    hosts = [g["host"] for g in gateways if g.get("host")]
+    if not hosts:
+        return {}
+    with ThreadPoolExecutor(max_workers=min(8, len(hosts))) as ex:
+        return dict(zip(hosts, ex.map(probe_latency, hosts)))
 
 
 def keyring_has(portal):  # replaced by the keyring section below
@@ -723,12 +854,13 @@ def interfaces_to_try(setting):
     return [s] if s in ("portal", "gateway") else ["gateway", "portal"]
 
 
-def pick_prelogin(portal, client_os, setting):
-    """Return (interface, prelogin result) for the first interface that offers SAML."""
+def pick_prelogin(portal, client_os, setting, gateway=""):
+    """Return (interface, host, prelogin result) for the first interface that offers SAML."""
     last = None
     for iface in interfaces_to_try(setting):
+        host = signin_host(portal, iface, gateway)
         try:
-            return iface, prelogin(portal, client_os, interface=iface)
+            return iface, host, prelogin(host, client_os, interface=iface)
         except PreloginError as e:
             debug_log(f"prelogin via {iface} rejected: {e}")
             last = e
@@ -931,17 +1063,22 @@ def resolve_portal(args):
     return portal
 
 
-def sign_in(portal, client_os, auth_interface="auto"):
-    emit("signing-in")
-    iface, pre = pick_prelogin(portal, CLIENT_OS.get(client_os, "Windows"), auth_interface)
-    result = run_sso_window(portal, pre["method"], pre["request"])
+def sign_in(portal, client_os, auth_interface="auto", gateway="", announce=True):
+    """SAML sign-in; returns (cookie kind, cookie, username, interface, host the sign-in happened at)."""
+    if announce:
+        emit("signing-in")
+    iface, host, pre = pick_prelogin(portal, CLIENT_OS.get(client_os, "Windows"), auth_interface, gateway)
+    result = run_sso_window(host, pre["method"], pre["request"])
     kind, cookie = choose_cookie(result)
     username = result["saml-username"]
-    debug_log(f"sso done: interface={iface} cookie-kind={kind} user={username} portal-cookie={'yes' if result.get('portal-userauthcookie') else 'no'}")
+    debug_log(f"sso done: interface={iface} host={host} cookie-kind={kind} user={username} portal-cookie={'yes' if result.get('portal-userauthcookie') else 'no'}")
     if result.get("portal-userauthcookie"):
         keyring_store(portal, result["portal-userauthcookie"])
-    save_state(username=username, portal=portal, authInterface=iface)
-    return kind, cookie, username, iface
+    if announce:
+        save_state(username=username, portal=portal, authInterface=iface)
+    else:
+        save_state(username=username, portal=portal)
+    return kind, cookie, username, iface, host
 
 
 def _install_term_handler():
@@ -967,24 +1104,26 @@ def cmd_connect(args):
         if args.hip and hip_script is None:
             warn("HIP report requested but openconnect's hipreport.sh was not found; continuing without HIP")
         use_hip = bool(args.hip and hip_script)
-        debug_log(f"connect portal={portal} gateway={args.gateway!r} os={args.client_os} hip={use_hip} interface={args.auth_interface} fresh={args.fresh}")
+        state = load_state()
+        choice = resolve_gateway_choice(args.gateway, state)
+        debug_log(f"connect portal={portal} gateway={args.gateway!r} choice={choice!r} os={args.client_os} hip={use_hip} interface={args.auth_interface} fresh={args.fresh}")
         ensure_nm_profile(portal, use_hip, hip_script)
         auth = None
-        username = load_state().get("username", "")
+        username = state.get("username", "")
         if not args.fresh and username:
             cookie = keyring_lookup(portal)
             debug_log(f"keyring portal cookie: {'found' if cookie else 'absent'}")
             if cookie:
                 emit("authenticating")
                 try:
-                    auth = authenticate(portal, "portal-userauthcookie", cookie, username, args.client_os, args.gateway, hip_script, interface="portal")
+                    auth = authenticate(portal, "portal-userauthcookie", cookie, username, args.client_os, choice, hip_script, interface="portal")
                 except AuthError:
                     keyring_clear(portal)
                     auth = None
         if auth is None:
-            kind, cookie, username, iface = sign_in(portal, args.client_os, args.auth_interface)
+            kind, cookie, username, iface, host = sign_in(portal, args.client_os, args.auth_interface, gateway=choice)
             emit("authenticating")
-            auth = authenticate(portal, kind, cookie, username, args.client_os, args.gateway, hip_script, interface=iface)
+            auth = authenticate(host, kind, cookie, username, args.client_os, choice, hip_script, interface=iface)
         gateway_host = urllib.parse.urlsplit(auth["CONNECT_URL"]).hostname or ""
         save_state(gateway=gateway_host, gatewayIp=resolve_host(gateway_host) if gateway_host else "", portal=portal)
         emit("activating")
@@ -1005,7 +1144,7 @@ def cmd_login(args):
     if not portal:
         fail("No portal configured")
     try:
-        sign_in(portal, args.client_os, args.auth_interface)
+        sign_in(portal, args.client_os, args.auth_interface, gateway=resolve_gateway_choice(args.gateway, load_state()))
         clear_runfile()
         print("phase=signed-in", flush=True)
     except Cancelled as e:
@@ -1106,6 +1245,41 @@ def cmd_collect_logs(args):
     print(f"path={path}", flush=True)
 
 
+def cmd_gateways(args):
+    """The portal's gateway list: --refresh signs in at the portal and fetches it, --probe times each gateway."""
+    portal = resolve_portal(args)
+    if not portal:
+        fail("No portal configured")
+    try:
+        if args.refresh:
+            kind, cookie, username, _iface, _host = sign_in(portal, args.client_os, "portal", announce=False)
+            if kind != "prelogin-cookie":
+                raise PortalConfigError("Portal sign-in returned no prelogin cookie")
+            cfg = fetch_portal_config(portal, username, cookie, args.client_os)
+            if cfg["portalUserAuthCookie"]:
+                keyring_store(portal, cfg["portalUserAuthCookie"])
+            save_state(gateways=cfg["gateways"], gatewaysFetchedAt=int(time.time()), portalName=cfg["portalName"], hipInterval=cfg["hipInterval"])
+        state = load_state()
+        if args.probe and state.get("gateways"):
+            save_state(latencies=probe_gateways(state["gateways"]), probedAt=int(time.time()))
+            state = load_state()
+    except Cancelled as e:
+        fail(str(e), 2)
+    except (PreloginError, AuthError, PortalConfigError) as e:
+        fail(str(e))
+    gws = state.get("gateways") or []
+    lat = state.get("latencies") or {}
+    print(json.dumps({
+        "portal": portal,
+        "portalName": state.get("portalName", ""),
+        "gateways": [dict(g, latencyMs=lat.get(g["host"], -1) if g["host"] in lat else None) for g in gws],
+        "fetchedAt": state.get("gatewaysFetchedAt", 0),
+        "probedAt": state.get("probedAt", 0),
+        "selected": args.gateway,
+        "best": best_gateway(gws, lat),
+    }))
+
+
 def cmd_hip_report(args):
     """What the HIP report says about this machine (the official client's Host Profile tab)."""
     state = load_state()
@@ -1140,11 +1314,15 @@ def main(argv=None):
         ("deps", cmd_deps, "report which dependencies are installed"),
         ("hip-report", cmd_hip_report, "show what the HIP report says about this machine"),
         ("collect-logs", cmd_collect_logs, "write a scrubbed troubleshooting tarball (default: ~/Downloads)"),
+        ("gateways", cmd_gateways, "list the portal's gateways (--refresh fetches, --probe measures latency)"),
     ):
         sp = sub.add_parser(name, help=help_text)
         common(sp)
         if name == "collect-logs":
             sp.add_argument("--output", default="", help="directory for the tarball")
+        if name == "gateways":
+            sp.add_argument("--refresh", action="store_true", help="sign in at the portal and fetch the gateway list")
+            sp.add_argument("--probe", action="store_true", help="measure TLS latency to each gateway")
         sp.set_defaults(fn=fn)
     args = p.parse_args(argv)
     set_debug(args.debug or os.environ.get("OMARCHY_GP_DEBUG") == "1")

@@ -14,7 +14,7 @@ no password prompts once installed.
   usually a window that flashes and closes. When the portal hands back a
   reusable session cookie it is kept in your keyring and reused until it expires.
 - **Keyboard-first** like the stock panels: `j`/`k` move, `Enter` activates,
-  `t` toggles, `c` copies the address, `n` rediscovers the network, `l` collects logs, `s` signs in again, `f` forgets the session, `Esc` closes.
+  `t` toggles, `c` copies the address, `n` rediscovers the network, `g` refreshes gateways, `l` collects logs, `s` signs in again, `f` forgets the session, `Esc` closes.
 - **NetworkManager owns the tunnel**, so routes, DNS, and teardown behave like any
   other NM VPN, and `nmcli connection down GlobalProtect` works from a terminal too.
   The profile is persistent: a Wi-Fi roam, cable swap, or resume from suspend makes
@@ -54,8 +54,12 @@ If the portal refuses the connection, check the panel's settings section:
   rather than the portal, and hand out no reusable portal cookie. `auto` probes
   the gateway interface on your host first and falls back to the portal; force
   `gateway` or `portal` if you know which one you need.
-- **Gateway**: leave empty to accept the portal's default gateway, or type the
-  gateway name your IT shows in the official client (portal sign-in only).
+- **Gateways**: the panel's *Gateways* section lists the portal's gateways with
+  priority and measured latency once you fetch them (`g`; this signs in at the
+  portal, so the Google window may flash). *Best available* picks the highest
+  priority, then the lowest latency, like the official client; click a gateway to
+  prefer it instead. With the gateway sign-in interface the SSO happens at the
+  chosen gateway's host; with the portal interface it is passed as `--authgroup`.
 - **HIP report**: turn on if your portal requires a host-integrity report. This
   submits openconnect's stock `hipreport.sh`. The panel's *Host state* section
   shows exactly what that script claims (reporting as Windows lists stock McAfee,
@@ -95,6 +99,7 @@ bin/omarchy-globalprotect login       # sign in only, store the session
 bin/omarchy-globalprotect forget      # drop the keyring entry and the WebKit data
 bin/omarchy-globalprotect hip-report --client-os win   # what the HIP report claims (JSON)
 bin/omarchy-globalprotect collect-logs                 # scrubbed troubleshooting tarball in ~/Downloads
+bin/omarchy-globalprotect gateways --refresh --probe   # fetch the portal's gateway list and time each one
 ```
 
 Where things live:
@@ -104,7 +109,7 @@ Where things live:
 | Portal, gateway, HIP, client OS settings | this widget's entry in `~/.config/omarchy/shell.json` |
 | Google session (WebKit website data) | `~/.local/share/omarchy-globalprotect/webkit/` (0700) |
 | Reusable portal session cookie | GNOME keyring, `application=omarchy-globalprotect` |
-| Last gateway / username | `~/.local/state/omarchy-globalprotect/state.json` |
+| Last gateway / username / cached gateway list | `~/.local/state/omarchy-globalprotect/state.json` |
 | NetworkManager profile | `nmcli connection show GlobalProtect` |
 
 ## Troubleshooting

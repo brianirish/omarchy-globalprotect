@@ -408,6 +408,98 @@ class LogBundleTests(unittest.TestCase):
                 self.assertEqual(tar.extractfile("omarchy-globalprotect-logs/journal.txt").read(), b"line\n")
 
 
+class PortalConfigTests(unittest.TestCase):
+    XML = (
+        '<?xml version="1.0" encoding="UTF-8"?>\n'
+        '<policy><portal-name>corp</portal-name>\n'
+        '  <portal-userauthcookie>PUAC</portal-userauthcookie>\n'
+        '  <gateways><cutoff-time>5</cutoff-time><external><list>\n'
+        '    <entry name="gw-east.example.com:443"><priority>1</priority><manual>no</manual><description>US East</description></entry>\n'
+        '    <entry name="gw-west.example.com"><priority-rule><entry name="Any"><priority>2</priority></entry></priority-rule>\n'
+        '      <manual>yes</manual><description>US West</description></entry>\n'
+        '    <entry name="gw-eu.example.com:443"><description>EU</description></entry>\n'
+        '  </list></external></gateways>\n'
+        '  <hip-collection><hip-report-interval>60</hip-report-interval></hip-collection>\n'
+        '</policy>\n'
+    )
+
+    def test_parse_lists_gateways_with_host_priority_and_manual(self):
+        cfg = gp.parse_portal_config(self.XML)
+        names = [g["name"] for g in cfg["gateways"]]
+        self.assertEqual(names, ["gw-east.example.com:443", "gw-west.example.com", "gw-eu.example.com:443"])
+        east, west, eu = cfg["gateways"]
+        self.assertEqual((east["host"], east["description"], east["priority"], east["manual"]), ("gw-east.example.com", "US East", 1, False))
+        self.assertEqual((west["host"], west["priority"], west["manual"]), ("gw-west.example.com", 2, True))
+        self.assertEqual((eu["host"], eu["description"], eu["priority"], eu["manual"]), ("gw-eu.example.com", "EU", 0, False))
+
+    def test_parse_returns_portal_cookie_and_hip_interval(self):
+        cfg = gp.parse_portal_config(self.XML)
+        self.assertEqual(cfg["portalUserAuthCookie"], "PUAC")
+        self.assertEqual(cfg["hipInterval"], 60)
+
+    def test_parse_no_gateways_gives_empty_list(self):
+        cfg = gp.parse_portal_config("<policy><gateways/></policy>")
+        self.assertEqual(cfg["gateways"], [])
+
+    def test_parse_bad_xml_raises(self):
+        with self.assertRaises(gp.PortalConfigError):
+            gp.parse_portal_config("<policy")
+
+    def test_parse_error_status_raises_with_message(self):
+        with self.assertRaises(gp.PortalConfigError) as cm:
+            gp.parse_portal_config("<prelogin-response><status>Error</status><msg>Invalid username or password</msg></prelogin-response>")
+        self.assertIn("Invalid username", str(cm.exception))
+
+    def test_config_body_carries_identity_and_prelogin_cookie(self):
+        body = gp.portal_config_body("vpn.example.com", "b@x.com", "COOKIE123", "win", "dz-linux")
+        fields = dict(pair.split("=", 1) for pair in body.split("&"))
+        self.assertEqual(fields["user"], "b%40x.com")
+        self.assertEqual(fields["prelogin-cookie"], "COOKIE123")
+        self.assertEqual(fields["server"], "vpn.example.com")
+        self.assertEqual(fields["computer"], "dz-linux")
+        self.assertEqual(fields["clientos"], "Windows")
+        for key in ("jnlpReady", "ok", "direct", "clientVer", "prot", "ipv6-support", "os-version"):
+            self.assertIn(key, fields)
+        self.assertNotIn("passwd", fields)
+
+    GWS = [
+        {"name": "a:443", "host": "a", "description": "A", "priority": 2, "manual": False},
+        {"name": "b", "host": "b", "description": "B", "priority": 1, "manual": False},
+        {"name": "c", "host": "c", "description": "C", "priority": 1, "manual": False},
+        {"name": "m", "host": "m", "description": "M", "priority": 1, "manual": True},
+    ]
+
+    def test_best_gateway_prefers_priority_then_latency(self):
+        self.assertEqual(gp.best_gateway(self.GWS, {"a": 5, "b": 80, "c": 40, "m": 1}), "c")
+
+    def test_best_gateway_unknown_latency_loses_to_measured(self):
+        self.assertEqual(gp.best_gateway(self.GWS, {"b": 80}), "b")
+
+    def test_best_gateway_skips_manual_only_and_handles_empty(self):
+        self.assertEqual(gp.best_gateway([self.GWS[3]], {"m": 1}), "")
+        self.assertEqual(gp.best_gateway([], {}), "")
+
+    def test_best_gateway_unknown_priority_ranks_last(self):
+        gws = [{"name": "x", "host": "x", "description": "", "priority": 0, "manual": False}] + self.GWS[:1]
+        self.assertEqual(gp.best_gateway(gws, {"x": 1, "a": 500}), "a:443")
+
+    def test_gateway_host_strips_port(self):
+        self.assertEqual(gp.gateway_host("gw.example.com:443"), "gw.example.com")
+        self.assertEqual(gp.gateway_host("gw.example.com"), "gw.example.com")
+        self.assertEqual(gp.gateway_host(""), "")
+
+    def test_signin_host_uses_gateway_for_gateway_interface_only(self):
+        self.assertEqual(gp.signin_host("portal.example.com", "gateway", "gw.example.com:443"), "gw.example.com")
+        self.assertEqual(gp.signin_host("portal.example.com", "portal", "gw.example.com:443"), "portal.example.com")
+        self.assertEqual(gp.signin_host("portal.example.com", "gateway", ""), "portal.example.com")
+
+    def test_resolve_gateway_choice_prefers_explicit_then_best(self):
+        state = {"gateways": self.GWS, "latencies": {"b": 80, "c": 40}}
+        self.assertEqual(gp.resolve_gateway_choice("a:443", state), "a:443")
+        self.assertEqual(gp.resolve_gateway_choice("", state), "c")
+        self.assertEqual(gp.resolve_gateway_choice("", {}), "")
+
+
 class ThemeColorTests(unittest.TestCase):
     def test_parses_minimal_toml(self):
         c = gp.parse_theme_colors('mode = "dark"\naccent = "#7d82d9"\nbackground = "#060B1E"\nforeground = "#ffcead"\n')
@@ -452,6 +544,18 @@ if __name__ == "__main__":
 
 
 class AuthInterfaceTests(unittest.TestCase):
+    def test_pick_prelogin_signs_in_at_the_chosen_gateway_host(self):
+        seen = []
+
+        def fake_prelogin(host, client_os, timeout=20, interface="portal"):
+            seen.append((host, interface))
+            return {"method": "REDIRECT", "request": "https://idp/sso"}
+
+        with unittest.mock.patch.object(gp, "prelogin", side_effect=fake_prelogin):
+            iface, host, pre = gp.pick_prelogin("portal.example.com", "Windows", "gateway", gateway="gw-east.example.com:443")
+        self.assertEqual((iface, host), ("gateway", "gw-east.example.com"))
+        self.assertEqual(seen, [("gw-east.example.com", "gateway")])
+
     def test_prelogin_urls(self):
         self.assertEqual(gp.prelogin_url("vpn.example.com", "portal"), "https://vpn.example.com/global-protect/prelogin.esp")
         self.assertEqual(gp.prelogin_url("vpn.example.com", "gateway"), "https://vpn.example.com/ssl-vpn/prelogin.esp")
@@ -478,7 +582,8 @@ class AuthInterfaceTests(unittest.TestCase):
                 raise gp.PreloginError("no saml here")
             return {"method": "REDIRECT", "request": "https://idp/sso"}
         with unittest.mock.patch.object(gp, "prelogin", fake_prelogin):
-            iface, pre = gp.pick_prelogin("p", "Windows", "auto")
+            iface, host, pre = gp.pick_prelogin("p", "Windows", "auto")
+        self.assertEqual(host, "p")
         self.assertEqual((iface, pre["method"], calls), ("portal", "REDIRECT", ["gateway", "portal"]))
 
     def test_pick_prelogin_raises_last_error_when_all_fail(self):

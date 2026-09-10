@@ -52,6 +52,9 @@ Item {
   property string actionStatus: ""
   property string lastError: ""
   property var hostState: Model.normalizeHostState(null)
+  property var gatewayList: Model.normalizeGateways(null)
+  property string gatewaysError: ""
+  readonly property bool gatewaysBusy: gatewaysProc.running
   property bool everPolled: false
 
   // Optimistic intent: -1 follow reality, 0 turning off, 1 turning on.
@@ -205,9 +208,21 @@ Item {
     hostStateProc.running = true
   }
 
-  onPanelOpenChanged: if (panelOpen) loadHostState()
+  onPanelOpenChanged: if (panelOpen) { loadHostState(); loadGateways(false) }
   onHipReportChanged: if (panelOpen) loadHostState()
   onClientOsChanged: if (panelOpen) loadHostState()
+
+  // Gateway list from the portal. refresh=true signs in at the portal (a window may
+  // flash) and fetches it; otherwise the cached list is shown and re-probed.
+  function loadGateways(refresh) {
+    if (cliPath === "" || !configured || gatewaysProc.running) return
+    gatewaysError = ""
+    if (refresh) flash("Fetching gateways…")
+    gatewaysProc.command = cliArgs("gateways", refresh ? ["--refresh", "--probe"] : ["--probe"])
+    gatewaysProc.running = true
+  }
+
+  function refreshGateways() { loadGateways(true) }
 
   // The official client's "Collect Logs": a scrubbed tarball for troubleshooting.
   function collectLogs() {
@@ -352,6 +367,25 @@ Item {
       var parsed = null
       try { parsed = JSON.parse(hostStateOut.text) } catch (e) {}
       if (code === 0 && parsed) root.hostState = Model.normalizeHostState(parsed)
+    }
+  }
+
+  Process {
+    id: gatewaysProc
+    stdout: StdioCollector { id: gatewaysOut; waitForEnd: true }
+    stderr: StdioCollector { id: gatewaysErr; waitForEnd: true }
+    onExited: function(code) {
+      var parsed = null
+      try { parsed = JSON.parse(gatewaysOut.text) } catch (e) {}
+      if (code === 0 && parsed) {
+        root.gatewayList = Model.normalizeGateways(parsed)
+        if (String(gatewaysProc.command).indexOf("--refresh") >= 0)
+          root.flash(root.gatewayList.gateways.length + " gateway" + (root.gatewayList.gateways.length === 1 ? "" : "s") + " from the portal")
+      } else if (code === 2) {
+        root.flash("Gateway refresh cancelled")
+      } else {
+        root.gatewaysError = String(gatewaysErr.text || "").replace(/^error=/m, "").trim() || "Could not fetch gateways"
+      }
     }
   }
 

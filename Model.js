@@ -113,6 +113,49 @@ function claimsText(h) {
   return h.products.length > 0 ? h.products.join(", ") : "Host info only"
 }
 
+// Gateways (the official client's gateway picker).
+function normalizeGateways(raw) {
+  var d = raw && typeof raw === "object" ? raw : {}
+  var list = Array.isArray(d.gateways) ? d.gateways : []
+  return {
+    gateways: list.map(function(g) {
+      return {
+        name: String(g.name || ""),
+        host: String(g.host || ""),
+        description: String(g.description || g.host || ""),
+        priority: Number(g.priority) || 0,
+        manual: g.manual === true,
+        latencyMs: (typeof g.latencyMs === "number") ? g.latencyMs : -2   // -2 = not probed, -1 = unreachable
+      }
+    }),
+    best: String(d.best || ""),
+    fetchedAt: Number(d.fetchedAt) || 0,
+    probedAt: Number(d.probedAt) || 0,
+    portalName: String(d.portalName || "")
+  }
+}
+
+function latencyText(ms) {
+  if (ms === -2 || ms === undefined || ms === null) return ""
+  if (ms < 0) return "unreachable"
+  return ms + " ms"
+}
+
+function priorityText(p) {
+  return p > 0 ? "P" + p : ""
+}
+
+function gatewayMeta(g) {
+  var parts = []
+  if (g.host !== "" && g.host !== g.description) parts.push(g.host)
+  var pr = priorityText(g.priority)
+  if (pr !== "") parts.push(pr)
+  if (g.manual) parts.push("manual")
+  var lt = latencyText(g.latencyMs)
+  if (lt !== "") parts.push(lt)
+  return parts.join(" · ")
+}
+
 function formatBytesPerSec(n) {
   n = Math.max(0, Number(n) || 0)
   if (n < 1024) return Math.round(n) + " B/s"

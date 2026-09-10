@@ -1,5 +1,16 @@
 # Changelog
 
+## Unreleased
+
+- *Gateways* section: fetch the portal's gateway list (`gateways --refresh`, `g` key),
+  see priority and TLS latency for each, and click one to prefer it. *Best available*
+  (empty `gateway` setting) picks the highest priority, then the lowest latency, like
+  the official client. Manual-only gateways are never auto-picked.
+- With the gateway sign-in interface, the SAML sign-in and `openconnect` now target the
+  chosen gateway's host; with the portal interface the choice is passed as `--authgroup`.
+- The free-text gateway field in Settings is replaced by the picker (the `gateway`
+  setting key is unchanged and still accepts a name by hand in `shell.json`).
+
 ## 0.2.0 — 2026-09-10
 
 - The NetworkManager profile is persistent (`vpn.persistent yes`): link changes and
