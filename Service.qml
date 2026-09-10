@@ -34,6 +34,7 @@ Item {
   readonly property bool sslOnly: setting("sslOnly", false) === true
   readonly property int mtu: Math.max(0, parseInt(String(setting("mtu", 0)), 10) || 0)
   readonly property bool blockLan: setting("blockLan", false) === true
+  readonly property bool followPortal: setting("followPortal", true) !== false
   readonly property int pauseMinutes: Math.min(1440, Math.max(1, parseInt(String(setting("pauseMinutes", 30)), 10) || 30))
   readonly property int refreshIntervalSec: Math.min(120, Math.max(2, parseInt(String(setting("refreshIntervalSec", 5)), 10) || 5))
 
@@ -62,6 +63,12 @@ Item {
   property string ip6: ""
   property var resolver: ({ dns: [], domains: [], active: false, defaultRoute: false })
   property string splitDns: "not-needed"
+  property var portals: []
+  property var policy: Model.normalizePolicy(null)
+  property bool welcomeAvailable: false
+  property var hipStatus: Model.normalizeHipStatus(null)
+  property string _lastHipWarningAt: ""
+  signal policyReceived(var policy)
   property var deps: ({ openconnect: false, nmOpenconnect: false, webkit: false })
   property string actionStatus: ""
   property string lastError: ""
@@ -144,6 +151,9 @@ Item {
     ip6 = s.ip6
     resolver = s.resolver
     splitDns = s.splitDns
+    portals = s.portals
+    policy = s.policy
+    welcomeAvailable = s.welcomeAvailable
     deps = s.deps
     if (s.state === "connected") sample(s.rxBytes, s.txBytes)
     else resetSamples()
@@ -290,7 +300,35 @@ Item {
     hostStateProc.running = true
   }
 
-  onPanelOpenChanged: if (panelOpen) { loadHostState(); loadGateways(false) }
+  onPanelOpenChanged: if (panelOpen) { loadHostState(); loadGateways(false); loadHipStatus() }
+
+  function loadHipStatus() {
+    if (cliPath === "" || hipStatusProc.running || !hipReport) return
+    hipStatusProc.command = cliArgs("hip-status")
+    hipStatusProc.running = true
+  }
+
+  function showWelcome() {
+    if (cliPath === "" || !welcomeAvailable) return
+    Quickshell.execDetached(cliArgs("welcome", ["--show"]))
+  }
+
+  // The official client refreshes the portal config on the portal's interval; with the
+  // stored portal cookie this is silent (--quiet never opens a window).
+  property double _lastQuietRefresh: 0
+
+  function maybeRefreshConfig() {
+    if (!connected || gatewaysProc.running || cliPath === "") return
+    var hours = policy.refreshConfigInterval
+    if (hours <= 0) return
+    var now = Date.now()
+    var age = now / 1000 - gatewayList.fetchedAt
+    if (gatewayList.fetchedAt > 0 && age < hours * 3600) return
+    if (now - _lastQuietRefresh < 3600000) return  // a portal that rejects the stored cookie is asked at most hourly
+    _lastQuietRefresh = now
+    gatewaysProc.command = cliArgs("gateways", ["--refresh", "--quiet", "--probe"])
+    gatewaysProc.running = true
+  }
   onHipReportChanged: if (panelOpen) loadHostState()
   onClientOsChanged: if (panelOpen) loadHostState()
 
@@ -472,17 +510,42 @@ Item {
     onExited: function(code) {
       var parsed = null
       try { parsed = JSON.parse(gatewaysOut.text) } catch (e) {}
+      var quiet = String(gatewaysProc.command).indexOf("--quiet") >= 0
       if (code === 0 && parsed) {
         root.gatewayList = Model.normalizeGateways(parsed)
-        if (String(gatewaysProc.command).indexOf("--refresh") >= 0)
-          root.flash(root.gatewayList.gateways.length + " gateway" + (root.gatewayList.gateways.length === 1 ? "" : "s") + " from the portal")
+        if (String(gatewaysProc.command).indexOf("--refresh") >= 0) {
+          if (!quiet) root.flash(root.gatewayList.gateways.length + " gateway" + (root.gatewayList.gateways.length === 1 ? "" : "s") + " from the portal")
+          root.policy = root.gatewayList.policy
+          root.policyReceived(root.gatewayList.policy)
+          delayedRefresh.restart()
+        }
       } else if (code === 2) {
         root.flash("Gateway refresh cancelled")
+      } else if (code === 4 || quiet) {
+        // silent refresh not possible right now; try again on the next tick
       } else {
         root.gatewaysError = String(gatewaysErr.text || "").replace(/^error=/m, "").trim() || "Could not fetch gateways"
       }
     }
   }
+
+  Process {
+    id: hipStatusProc
+    stdout: StdioCollector { id: hipStatusOut; waitForEnd: true }
+    onExited: function(code) {
+      var parsed = null
+      try { parsed = JSON.parse(hipStatusOut.text) } catch (e) {}
+      if (code !== 0 || !parsed) return
+      root.hipStatus = Model.normalizeHipStatus(parsed)
+      if (root.hipStatus.warning !== "" && root.hipStatus.warningAt !== root._lastHipWarningAt) {
+        root._lastHipWarningAt = root.hipStatus.warningAt
+        root.notify("Host check", root.hipStatus.warning, "dialog-warning")
+      }
+    }
+  }
+
+  Timer { id: hipStatusTick; interval: 600000; repeat: true; running: root.connected && root.hipReport; onTriggered: root.loadHipStatus() }
+  Timer { id: configRefreshTick; interval: 300000; repeat: true; running: root.connected && root.cliPath !== ""; triggeredOnStart: true; onTriggered: root.maybeRefreshConfig() }
 
   Process {
     id: collectLogsProc

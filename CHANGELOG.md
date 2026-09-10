@@ -1,5 +1,18 @@
 # Changelog
 
+## Unreleased
+
+- Portal-driven app settings: the gateway refresh also parses `agent-config` (connect
+  method, tunnel MTU, SSL-only, rediscover/sign-out permissions, welcome page, refresh
+  interval) and, with *Follow the portal's settings* on, applies connect method, MTU,
+  and SSL-only. The config is refreshed silently on the portal's interval via the
+  stored portal cookie (`gateways --refresh --quiet`).
+- Multiple portals: state is now per portal (`portals/<host>.json`); a *Portals*
+  section lists known portals with click-to-switch; `forget --remove` drops one.
+- HIP notifications: `hip-status` reads the last check/submission from openconnect's
+  journal; the panel shows it under *Host state* and raises warnings as notifications.
+- Welcome page: `welcome --show` opens the portal's page; `w` in the panel.
+
 ## 0.6.0 — 2026-09-10
 
 - Tunnel DNS (`dnsMode`): the gateway's DNS servers and search domains are applied to

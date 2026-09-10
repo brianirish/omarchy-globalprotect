@@ -46,9 +46,11 @@ Panel {
   function rowsForCursor() {
     var rows = ["header"]
     if (gp.connected && gp.ip4 !== "") rows.push("address")
-    if (gp.connected) rows.push("rediscover")
+    if (gp.connected && gp.policy.rediscoverNetwork) rows.push("rediscover")
     if (gp.connected && gp.splitDns === "needed" && gp.dnsMode !== "off") rows.push("splitdns")
     if (gp.username !== "" || gp.hasSession) rows.push("signin", "forget")
+    if (gp.welcomeAvailable) rows.push("welcome")
+    if (gp.portals.length > 1) for (var pi = 0; pi < gp.portals.length; pi++) rows.push("portal:" + pi)
     if (gp.configured && gp.depsOk) {
       rows.push("gw:auto")
       for (var i = 0; i < gp.gatewayList.gateways.length; i++) rows.push("gw:" + i)
@@ -78,12 +80,37 @@ Panel {
     else if (row === "install") installDeps()
     else if (row === "logs") gp.collectLogs()
     else if (row === "resume") gp.resume()
+    else if (row === "welcome") gp.showWelcome()
+    else if (row.indexOf("portal:") === 0) switchPortal(gp.portals[parseInt(row.substring(7), 10)] || "")
     else if (row === "gw:auto") selectGateway("")
     else if (row === "gwrefresh") gp.refreshGateways()
     else if (row.indexOf("gw:") === 0) {
       var g = gp.gatewayList.gateways[parseInt(row.substring(3), 10)]
       if (g) selectGateway(g.name)
     }
+  }
+
+  function applyPolicy(policy) {
+    if (!gp.followPortal) return
+    var changes = Model.policyChanges(policy, { connectMethod: gp.alwaysOn ? "always-on" : "on-demand", mtu: gp.mtu, sslOnly: gp.sslOnly })
+    var keys = Object.keys(changes)
+    for (var i = 0; i < keys.length; i++) saveSetting(keys[i], changes[keys[i]])
+    if (keys.length > 0) gp.flash("Applied the portal's settings: " + keys.join(", "))
+  }
+
+  function switchPortal(host) {
+    if (host === gp.portal || host === "") return
+    if (gp.active) gp.disconnectVpn()
+    saveSetting("portal", host)
+    gp.flash("Portal: " + host)
+    delayedPortalRefresh.restart()
+  }
+
+  function removePortal(host) {
+    if (host === gp.portal) return
+    Quickshell.execDetached([gpPanel.pluginDir + "/bin/omarchy-globalprotect", "forget", "--portal", host, "--remove"])
+    gp.flash("Removed " + host)
+    delayedPortalRefresh.restart()
   }
 
   function selectGateway(name) {
@@ -159,6 +186,13 @@ Panel {
   Service {
     id: gp
     settings: gpPanel.settings
+  }
+
+  Timer { id: delayedPortalRefresh; interval: 800; repeat: false; onTriggered: gp.refresh() }
+
+  Connections {
+    target: gp
+    function onPolicyReceived(policy) { gpPanel.applyPolicy(policy) }
   }
 
   Timer {
@@ -260,7 +294,7 @@ Panel {
     PanelKeyCatcher {
       id: keyCatcher
       anchors.fill: parent
-      blocked: gpPanel.forgetOpen || portalField.activeFocus || proxyField.activeFocus || certField.activeFocus || keyField.activeFocus || mtuField.activeFocus
+      blocked: gpPanel.forgetOpen || portalField.activeFocus || proxyField.activeFocus || certField.activeFocus || keyField.activeFocus || mtuField.activeFocus || addPortalField.activeFocus
       onMoveRequested: function(dx, dy) {
         if (!gpPanel.cursorActive) { gpPanel.cursorActive = true; return }
         if (dy !== 0) gpPanel.moveCursor(dy)
@@ -278,6 +312,7 @@ Panel {
         else if (k === "l") gp.collectLogs()
         else if (k === "g") gp.refreshGateways()
         else if (k === "p") gp.togglePause()
+        else if (k === "w") gp.showWelcome()
         else if (k === "f") gpPanel.openForget()
       }
 
@@ -515,6 +550,7 @@ Panel {
             }
 
             Button {
+              visible: gp.policy.rediscoverNetwork
               width: parent.width
               iconText: ""
               iconSpinning: gp.transitioning
@@ -583,6 +619,21 @@ Panel {
                 verticalPadding: Style.spacing.controlPaddingY
                 onClicked: gpPanel.openForget()
               }
+            }
+
+            Button {
+              visible: gp.welcomeAvailable
+              width: parent.width
+              iconText: ""
+              text: "Welcome page from " + (gp.policy.portalName !== "" ? gp.policy.portalName : gp.portal)
+              fontSize: Style.font.bodySmall
+              foreground: gpPanel.foreground
+              fontFamily: gpPanel.fontFamily
+              bordered: true
+              hasCursor: gpPanel.cursorRow === "welcome"
+              horizontalPadding: Style.spacing.controlPaddingX
+              verticalPadding: Style.spacing.controlPaddingY
+              onClicked: gp.showWelcome()
             }
 
             Text {
@@ -687,6 +738,42 @@ Panel {
           }
 
           // ---------- Settings ----------
+          // ---------- Portals ----------
+          PanelSeparator { visible: portalsSection.visible; foreground: gpPanel.foreground }
+
+          Section {
+            id: portalsSection
+            shown: gp.portals.length > 1
+
+            PanelSectionHeader { text: "PORTALS"; foreground: gpPanel.foreground; fontFamily: gpPanel.fontFamily }
+
+            Repeater {
+              model: gp.portals
+              GatewayRow {
+                required property var modelData
+                required property int index
+                title: modelData
+                meta: modelData === gp.portal ? "current" : "click to switch"
+                selected: modelData === gp.portal
+                hasCursor: gpPanel.cursorRow === "portal:" + index
+                onActivated: gpPanel.switchPortal(modelData)
+                trailingIcon: modelData === gp.portal ? "" : ""
+                onTrailingActivated: gpPanel.removePortal(modelData)
+              }
+            }
+
+            Text {
+              textFormat: Text.PlainText
+              width: parent.width
+              text: "Each portal keeps its own session, gateways, and settings from the portal. Add one in Settings."
+              color: gpPanel.foreground
+              opacity: 0.55
+              font.family: gpPanel.fontFamily
+              font.pixelSize: Style.font.caption
+              wrapMode: Text.WordWrap
+            }
+          }
+
           // ---------- Gateways ----------
           PanelSeparator { visible: gatewaysSection.visible; foreground: gpPanel.foreground }
 
@@ -773,6 +860,24 @@ Panel {
               value: Model.claimsText(gp.hostState)
             }
 
+            InfoRow {
+              visible: gp.hipReport && gp.connected
+              label: "Last check"
+              value: Model.timestampText(gp.hipStatus.lastCheck) + (gp.hipStatus.lastSubmit !== "" ? " · sent " + Model.timestampText(gp.hipStatus.lastSubmit) : "")
+            }
+
+            Text {
+              visible: gp.hipStatus.warning !== ""
+              textFormat: Text.PlainText
+              width: parent.width
+              text: gp.hipStatus.warning
+              color: gpPanel.urgent
+              opacity: 0.9
+              font.family: gpPanel.fontFamily
+              font.pixelSize: Style.font.caption
+              wrapMode: Text.WordWrap
+            }
+
             Text {
               textFormat: Text.PlainText
               width: parent.width
@@ -833,6 +938,20 @@ Panel {
               verticalPadding: Style.spacing.controlPaddingY
               onClicked: gp.resume()
             }
+
+            Toggle {
+              width: parent.width
+              label: "Follow the portal's settings"
+              description: gp.policy.portalName !== ""
+                ? "Connect method, MTU, and SSL-only come from " + gp.policy.portalName + (gp.policy.version !== "" ? " (v" + gp.policy.version + ")" : "") + " when it says so"
+                : "Apply the connect method, MTU, and SSL-only the portal pushes (fetched with the gateway list)"
+              checked: gp.followPortal
+              foreground: gpPanel.foreground
+              fontFamily: gpPanel.fontFamily
+              onClicked: gpPanel.saveSetting("followPortal", !gp.followPortal)
+            }
+
+            SettingField { id: addPortalField; label: "Add portal"; placeholder: "vpn2.example.com"; settingKey: "portal"; current: ""; visible: gp.policy.canChangePortal }
 
             Toggle {
               width: parent.width
@@ -1002,7 +1121,9 @@ Panel {
     property string meta: ""
     property bool selected: false
     property bool connectedHere: false
+    property string trailingIcon: ""
     signal activated()
+    signal trailingActivated()
 
     width: parent ? parent.width : implicitWidth
     implicitHeight: gwContent.implicitHeight + Style.space(10)
@@ -1014,6 +1135,23 @@ Panel {
       hoverEnabled: true
       cursorShape: Qt.PointingHandCursor
       onClicked: gatewayRow.activated()
+    }
+
+    Text {
+      visible: gatewayRow.trailingIcon !== ""
+      text: gatewayRow.trailingIcon
+      color: gpPanel.dim
+      font.family: gpPanel.fontFamily
+      font.pixelSize: Style.font.bodySmall
+      anchors.right: parent.right
+      anchors.rightMargin: Style.space(10)
+      anchors.verticalCenter: parent.verticalCenter
+      MouseArea {
+        anchors.fill: parent
+        anchors.margins: -Style.space(6)
+        cursorShape: Qt.PointingHandCursor
+        onClicked: function(mouse) { mouse.accepted = true; gatewayRow.trailingActivated() }
+      }
     }
 
     Row {

@@ -129,10 +129,10 @@ Pick where you land.
 
 ### v0.7 — Portal-driven
 
-- [ ] Multiple portals
-- [ ] Portal-driven app settings (`agent-config`)
-- [ ] HIP notifications
-- [ ] Welcome page
+- [x] Multiple portals
+- [x] Portal-driven app settings (`agent-config`)
+- [x] HIP notifications
+- [x] Welcome page
 
 ### v1.0 — Parity
 

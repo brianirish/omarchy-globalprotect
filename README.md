@@ -15,7 +15,7 @@ no password prompts once installed.
   usually a window that flashes and closes. When the portal hands back a
   reusable session cookie it is kept in your keyring and reused until it expires.
 - **Keyboard-first** like the stock panels: `j`/`k` move, `Enter` activates,
-  `t` toggles, `c` copies the address, `n` rediscovers the network, `g` refreshes gateways, `p` pauses or resumes Always-On, `l` collects logs, `s` signs in again, `f` forgets the session, `Esc` closes.
+  `t` toggles, `c` copies the address, `n` rediscovers the network, `g` refreshes gateways, `p` pauses or resumes Always-On, `w` shows the portal's welcome page, `l` collects logs, `s` signs in again, `f` forgets the session, `Esc` closes.
 - **NetworkManager owns the tunnel**, so routes, DNS, and teardown behave like any
   other NM VPN, and `nmcli connection down GlobalProtect` works from a terminal too.
   The profile is persistent: a Wi-Fi roam, cable swap, or resume from suspend makes
@@ -97,6 +97,19 @@ If the portal refuses the connection, check the panel's settings section:
   physical interfaces' on-link subnets into the tunnel while connected.
 - **IPv6**: the tunnel's global IPv6 address shows next to the IPv4 one when the gateway
   assigns one (openconnect's GlobalProtect IPv6 support is still marked experimental).
+- **Portal-driven settings** (`followPortal`, default on): fetching the gateway list
+  also reads the portal's app settings. The connect method (`user-logon` → Always-On),
+  tunnel MTU, and SSL-only are applied to this widget's settings when the portal sets
+  them; whether *Rediscover network* is offered follows the portal too. The config is
+  refreshed silently on the portal's interval using the stored portal session.
+- **Multiple portals**: add a host in Settings; each portal keeps its own session,
+  gateway list, and portal settings (`~/.local/state/omarchy-globalprotect/portals/`).
+  A *Portals* section appears once there is more than one; click to switch.
+- **HIP notifications**: the *Host state* section shows the last HIP check and submission
+  from openconnect's journal; a failed or non-compliant check is raised as a
+  notification.
+- **Welcome page**: when the portal publishes one, `w` (or the button in *Account*)
+  shows it in a window.
 - **Connect method** (`connectMethod`: `on-demand` or `always-on`, and `pauseMinutes`):
   the *Always-On* toggle in the panel. Turning the switch off while Always-On pauses it
   for `pauseMinutes`; cancelling the sign-in window does the same.
@@ -144,7 +157,8 @@ Where things live:
 | Reusable portal session cookie, remembered password | GNOME keyring, `application=omarchy-globalprotect` |
 | System-browser callback handler | `~/.local/share/applications/omarchy-globalprotect-callback.desktop` |
 | Tunnel DNS polkit rule (optional, installed on request) | `/etc/polkit-1/rules.d/50-omarchy-globalprotect-resolved.rules` |
-| Last gateway / username / cached gateway list | `~/.local/state/omarchy-globalprotect/state.json` |
+| Current portal | `~/.local/state/omarchy-globalprotect/state.json` |
+| Per-portal username, gateway, gateway list, portal settings | `~/.local/state/omarchy-globalprotect/portals/<host>.json` |
 | NetworkManager profile | `nmcli connection show GlobalProtect` |
 
 ## Troubleshooting

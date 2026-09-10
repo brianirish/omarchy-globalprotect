@@ -9,7 +9,7 @@ const vm = require("node:vm");
 
 const src = fs.readFileSync(path.join(__dirname, "..", "Model.js"), "utf8").replace(/^\.pragma library\s*$/m, "");
 const M = {};
-vm.runInNewContext(src + "\nthis.__exports = { autoConnectDecision: typeof autoConnectDecision === 'function' ? autoConnectDecision : undefined, nextBackoffMs: typeof nextBackoffMs === 'function' ? nextBackoffMs : undefined, autoText: typeof autoText === 'function' ? autoText : undefined, normalizeStatus, routesText, dnsText, gatewayMeta };", M);
+vm.runInNewContext(src + "\nthis.__exports = { autoConnectDecision: typeof autoConnectDecision === 'function' ? autoConnectDecision : undefined, nextBackoffMs: typeof nextBackoffMs === 'function' ? nextBackoffMs : undefined, autoText: typeof autoText === 'function' ? autoText : undefined, normalizeStatus, routesText, dnsText, gatewayMeta, policyChanges: typeof policyChanges === 'function' ? policyChanges : undefined, normalizePolicy: typeof normalizePolicy === 'function' ? normalizePolicy : undefined, resolverText: typeof resolverText === 'function' ? resolverText : undefined };", M);
 const Model = M.__exports;
 
 let passed = 0;
@@ -83,6 +83,21 @@ test("routesText and dnsText summarize what the gateway pushed", () => {
   assert.equal(Model.routesText([], false), "—");
   assert.equal(Model.dnsText(["10.0.0.53"], ["corp.example.com"]), "10.0.0.53 · corp.example.com");
   assert.equal(Model.dnsText([], []), "—");
+});
+test("policyChanges maps the portal's agent-config onto settings", () => {
+  // Objects born inside the vm context have a different Object prototype, so compare by JSON.
+  const same = (a, b) => assert.equal(JSON.stringify(a), JSON.stringify(b));
+  const policy = Model.normalizePolicy({ connectMethod: "user-logon", tunnelMtu: 1400, sslOnly: false });
+  same(Model.policyChanges(policy, { connectMethod: "on-demand", mtu: 0, sslOnly: false }), { connectMethod: "always-on", mtu: 1400 });
+  same(Model.policyChanges(policy, { connectMethod: "always-on", mtu: 1400, sslOnly: false }), {});
+  same(Model.policyChanges(Model.normalizePolicy({ connectMethod: "on-demand", sslOnly: true }), { connectMethod: "always-on", mtu: 0, sslOnly: false }), { connectMethod: "on-demand", sslOnly: true });
+  same(Model.policyChanges(Model.normalizePolicy({}), { connectMethod: "on-demand", mtu: 0, sslOnly: false }), {});
+});
+test("resolverText prefers what resolved uses over what was pushed", () => {
+  assert.equal(Model.resolverText({ dns: ["10.0.0.53"], domains: ["~corp.example.com"], active: true, defaultRoute: false }, ["1.1.1.1"], [], "enabled"), "10.0.0.53 · ~corp.example.com");
+  assert.equal(Model.resolverText({ dns: ["10.0.0.53"], domains: ["~."], active: true, defaultRoute: true }, [], [], "enabled"), "10.0.0.53 · all queries");
+  assert.equal(Model.resolverText({ dns: [], domains: [], active: false, defaultRoute: false }, ["1.1.1.1"], [], "needed"), "1.1.1.1 · not applied");
+  assert.equal(Model.resolverText({ dns: [], domains: [], active: false, defaultRoute: false }, [], [], "needed"), "—");
 });
 test("backoff doubles from 30 s and caps at 10 min", () => {
   assert.equal(Model.nextBackoffMs(1), 30000);

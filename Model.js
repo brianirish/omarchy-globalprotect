@@ -43,6 +43,9 @@ function normalizeStatus(raw) {
       defaultRoute: !!(s.resolver && s.resolver.defaultRoute === true)
     },
     splitDns: ["not-needed", "needed", "enabled"].indexOf(s.splitDns) >= 0 ? s.splitDns : "not-needed",
+    portals: Array.isArray(s.portals) ? s.portals.map(String) : [],
+    policy: normalizePolicy(s.policy),
+    welcomeAvailable: s.welcomeAvailable === true,
     detail: String(s.detail || ""),
     deps: {
       openconnect: deps.openconnect === true,
@@ -140,6 +143,49 @@ function claimsText(h) {
   return h.products.length > 0 ? h.products.join(", ") : "Host info only"
 }
 
+// Portal-driven app settings (agent-config), as parsed by the CLI.
+function normalizePolicy(raw) {
+  var p = raw && typeof raw === "object" ? raw : {}
+  return {
+    portalName: String(p.portalName || ""),
+    version: String(p.version || ""),
+    configDigest: String(p.configDigest || ""),
+    connectMethod: String(p.connectMethod || ""),
+    refreshConfigInterval: Number(p.refreshConfigInterval) || 0,
+    tunnelMtu: Number(p.tunnelMtu) || 0,
+    sslOnly: p.sslOnly === true,
+    rediscoverNetwork: p.rediscoverNetwork !== false,
+    enableSignout: p.enableSignout !== false,
+    canChangePortal: p.canChangePortal !== false,
+    welcomePage: String(p.welcomePage || "")
+  }
+}
+
+// Settings the portal wants changed, as {key: value} — empty when everything already matches.
+function policyChanges(policy, settings) {
+  var out = {}
+  if (!policy) return out
+  if (policy.connectMethod === "user-logon" && settings.connectMethod !== "always-on") out.connectMethod = "always-on"
+  if (policy.connectMethod === "on-demand" && settings.connectMethod !== "on-demand") out.connectMethod = "on-demand"
+  if (policy.tunnelMtu > 0 && settings.mtu !== policy.tunnelMtu) out.mtu = policy.tunnelMtu
+  if (policy.sslOnly && settings.sslOnly !== true) out.sslOnly = true
+  return out
+}
+
+function normalizeHipStatus(raw) {
+  var h = raw && typeof raw === "object" ? raw : {}
+  return { lastCheck: String(h.lastCheck || ""), lastSubmit: String(h.lastSubmit || ""), warning: String(h.warning || ""), warningAt: String(h.warningAt || "") }
+}
+
+function timestampText(iso) {
+  if (!iso) return "—"
+  var d = new Date(iso)
+  if (isNaN(d.getTime())) return iso
+  var now = new Date()
+  var sameDay = d.toDateString() === now.toDateString()
+  return sameDay ? clockText(d.getTime()) : (d.getMonth() + 1) + "/" + d.getDate() + " " + clockText(d.getTime())
+}
+
 // Gateways (the official client's gateway picker).
 function normalizeGateways(raw) {
   var d = raw && typeof raw === "object" ? raw : {}
@@ -158,7 +204,8 @@ function normalizeGateways(raw) {
     best: String(d.best || ""),
     fetchedAt: Number(d.fetchedAt) || 0,
     probedAt: Number(d.probedAt) || 0,
-    portalName: String(d.portalName || "")
+    portalName: String(d.portalName || ""),
+    policy: normalizePolicy(d.policy)
   }
 }
 

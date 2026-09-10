@@ -191,7 +191,7 @@ class StatusJsonTests(unittest.TestCase):
         # nmcli reports the *base* device as IP-IFACE for VPN connections; the tunnel device is the one holding the VPN address.
         details = "GENERAL.STATE:activated\nGENERAL.IP-IFACE:enp7s0\nIP4.ADDRESS[1]:10.1.2.3/32\nconnection.timestamp:1757490000\n"
         with tempfile.TemporaryDirectory() as d, unittest.mock.patch.dict(os.environ, {"XDG_STATE_HOME": d, "XDG_RUNTIME_DIR": d}):
-            gp.save_state(gateway="gw.example.com", username="b@x.com")
+            gp.save_state(portal="vpn.example.com", gateway="gw.example.com", username="b@x.com")
             with unittest.mock.patch.object(gp, "check_deps", return_value={"openconnect": True, "nmOpenconnect": True, "webkit": True}), \
                  unittest.mock.patch.object(gp, "nm_connection_state", return_value="activated"), \
                  unittest.mock.patch.object(gp, "nm_connection_details", return_value=gp.parse_nmcli_terse(details)), \
@@ -213,7 +213,7 @@ class StatusJsonTests(unittest.TestCase):
             "IP4.ROUTE[1]:dst = 0.0.0.0/0, nh = 0.0.0.0, mt = 50\nIP4.DNS[1]:10.0.0.53\nIP4.DOMAIN[1]:corp.example.com\n"
         )
         with tempfile.TemporaryDirectory() as d, unittest.mock.patch.dict(os.environ, {"XDG_STATE_HOME": d, "XDG_RUNTIME_DIR": d}):
-            gp.save_state(gateway="gw.example.com", gatewayIp="68.111.1.18")
+            gp.save_state(portal="vpn.example.com", gateway="gw.example.com", gatewayIp="68.111.1.18")
             with unittest.mock.patch.object(gp, "check_deps", return_value={"openconnect": True, "nmOpenconnect": True, "webkit": True}), \
                  unittest.mock.patch.object(gp, "nm_connection_state", return_value="activated"), \
                  unittest.mock.patch.object(gp, "nm_connection_details", return_value=gp.parse_nmcli_terse(details)), \
@@ -724,6 +724,119 @@ class NetworkOptionTests(unittest.TestCase):
         details = gp.parse_nmcli_terse("IP6.ADDRESS[1]:fe80::1/64\nIP6.ADDRESS[2]:2001:db8::5/128\n")
         self.assertEqual(gp.global_ip6(details), "2001:db8::5")
         self.assertEqual(gp.global_ip6(gp.parse_nmcli_terse("IP6.ADDRESS[1]:fe80::1/64\n")), "")
+
+
+class PortalPolicyTests(unittest.TestCase):
+    XML = (
+        '<policy><portal-name>Client-VPN</portal-name><version>6.1.1-5</version>'
+        '<connect-method>user-logon</connect-method><on-demand>no</on-demand>'
+        '<refresh-config>yes</refresh-config><refresh-config-interval>24</refresh-config-interval>'
+        '<config-digest>4e0f27c0</config-digest>'
+        '<agent-config><rediscover-network>yes</rediscover-network><enable-signout>yes</enable-signout>'
+        '<default-browser>yes</default-browser><retry-tunnel>30</retry-tunnel><retry-timeout>5</retry-timeout>'
+        '<captive-portal-notification-delay>5</captive-portal-notification-delay><ssl-only-selection>0</ssl-only-selection>'
+        '<tunnel-mtu>1400</tunnel-mtu><save-user-credentials>1</save-user-credentials></agent-config>'
+        '<agent-ui><can-save-password>yes</can-save-password><can-change-portal>yes</can-change-portal>'
+        '<welcome-page><display>yes</display><page>&lt;h1&gt;Welcome&lt;/h1&gt;</page></welcome-page>'
+        '<help-page><display>no</display><page></page></help-page></agent-ui>'
+        '<hip-collection><hip-report-interval>3600</hip-report-interval></hip-collection>'
+        '<gateways><external><list><entry name="gw"><description>GW</description></entry></list></external></gateways>'
+        '</policy>'
+    )
+
+    def test_policy_fields(self):
+        pol = gp.parse_portal_config(self.XML)["policy"]
+        self.assertEqual(pol["connectMethod"], "user-logon")
+        self.assertEqual(pol["refreshConfigInterval"], 24)
+        self.assertEqual(pol["configDigest"], "4e0f27c0")
+        self.assertEqual(pol["tunnelMtu"], 1400)
+        self.assertFalse(pol["sslOnly"])
+        self.assertTrue(pol["rediscoverNetwork"])
+        self.assertTrue(pol["enableSignout"])
+        self.assertTrue(pol["defaultBrowser"])
+        self.assertEqual((pol["retryTunnel"], pol["retryTimeout"]), (30, 5))
+        self.assertEqual(pol["captivePortalNotificationDelay"], 5)
+        self.assertTrue(pol["canSavePassword"])
+        self.assertTrue(pol["canChangePortal"])
+        self.assertEqual(pol["welcomePage"], "<h1>Welcome</h1>")
+        self.assertEqual(pol["version"], "6.1.1-5")
+
+    def test_policy_defaults_when_absent(self):
+        pol = gp.parse_portal_config("<policy><gateways/></policy>")["policy"]
+        self.assertEqual(pol["connectMethod"], "")
+        self.assertEqual(pol["tunnelMtu"], 0)
+        self.assertEqual(pol["welcomePage"], "")
+        self.assertTrue(pol["rediscoverNetwork"])
+        self.assertTrue(pol["enableSignout"])
+
+    def test_ssl_only_selection_one_means_ssl_only(self):
+        pol = gp.parse_portal_config("<policy><agent-config><ssl-only-selection>1</ssl-only-selection></agent-config></policy>")["policy"]
+        self.assertTrue(pol["sslOnly"])
+
+    def test_welcome_page_hidden_when_display_no(self):
+        xml = self.XML.replace("<welcome-page><display>yes</display>", "<welcome-page><display>no</display>")
+        self.assertEqual(gp.parse_portal_config(xml)["policy"]["welcomePage"], "")
+
+    def test_config_body_with_portal_cookie_instead_of_prelogin(self):
+        body = gp.portal_config_body("vpn.example.com", "b@x.com", "", "win", "dz-linux", userauthcookie="PUAC")
+        fields = dict(pair.split("=", 1) for pair in body.split("&"))
+        self.assertEqual(fields["portal-userauthcookie"], "PUAC")
+        self.assertNotIn("prelogin-cookie", fields)
+        self.assertNotIn("passwd", fields)
+
+
+class HipJournalTests(unittest.TestCase):
+    LINES = (
+        "2026-09-10T10:16:09-0700 dz-linux NetworkManager[75564]: POST https://gw/ssl-vpn/hipreportcheck.esp\n"
+        "2026-09-10T10:16:09-0700 dz-linux NetworkManager[75564]: WARNING: Server asked us to submit HIP report with md5sum 0f51.\n"
+        "2026-09-10T10:16:10-0700 dz-linux NetworkManager[75564]: Submitting HIP report\n"
+        "2026-09-10T10:16:10-0700 dz-linux NetworkManager[75564]: HIP report submitted successfully\n"
+        "2026-09-10T11:16:09-0700 dz-linux openconnect[75564]: GlobalProtect HIP check due\n"
+        "2026-09-10T11:16:09-0700 dz-linux openconnect[75564]: POST https://gw/ssl-vpn/hipreportcheck.esp\n"
+    )
+
+    def test_parses_last_check_and_submit(self):
+        h = gp.parse_hip_journal(self.LINES)
+        self.assertEqual(h["lastCheck"], "2026-09-10T11:16:09-0700")
+        self.assertEqual(h["lastSubmit"], "2026-09-10T10:16:10-0700")
+        self.assertEqual(h["warning"], "")
+
+    def test_surfaces_failure_lines_as_warning(self):
+        lines = self.LINES + "2026-09-10T12:16:09-0700 dz-linux openconnect[75564]: HIP report submission failed: Compliance check failed\n"
+        h = gp.parse_hip_journal(lines)
+        self.assertIn("Compliance check failed", h["warning"])
+        self.assertEqual(h["warningAt"], "2026-09-10T12:16:09-0700")
+
+    def test_empty_journal(self):
+        self.assertEqual(gp.parse_hip_journal("")["lastCheck"], "")
+
+
+class PerPortalStateTests(unittest.TestCase):
+    def test_state_is_scoped_per_portal_with_a_global_current_portal(self):
+        with tempfile.TemporaryDirectory() as d, unittest.mock.patch.dict(os.environ, {"XDG_STATE_HOME": d}):
+            gp.save_state(portal="a.example.com", username="ua", gateway="ga")
+            gp.save_state(portal="b.example.com", username="ub")
+            s = gp.load_state()
+            self.assertEqual((s["portal"], s["username"]), ("b.example.com", "ub"))
+            self.assertNotIn("gateway", s)
+            self.assertEqual(gp.load_state("a.example.com")["gateway"], "ga")
+            gp.save_state(portal="a.example.com")
+            self.assertEqual(gp.load_state()["username"], "ua")
+            self.assertEqual(gp.known_portals(), ["a.example.com", "b.example.com"])
+
+    def test_save_without_portal_targets_the_current_one(self):
+        with tempfile.TemporaryDirectory() as d, unittest.mock.patch.dict(os.environ, {"XDG_STATE_HOME": d}):
+            gp.save_state(portal="a.example.com")
+            gp.save_state(username="ua")
+            self.assertEqual(gp.load_state("a.example.com")["username"], "ua")
+
+    def test_forget_portal_drops_only_that_portal(self):
+        with tempfile.TemporaryDirectory() as d, unittest.mock.patch.dict(os.environ, {"XDG_STATE_HOME": d}):
+            gp.save_state(portal="a.example.com", username="ua")
+            gp.save_state(portal="b.example.com", username="ub")
+            gp.forget_portal("a.example.com")
+            self.assertEqual(gp.known_portals(), ["b.example.com"])
+            self.assertEqual(gp.load_state("b.example.com")["username"], "ub")
 
 
 class ThemeColorTests(unittest.TestCase):

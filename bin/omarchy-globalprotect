@@ -408,6 +408,35 @@ def global_ip6(details):
     return ""
 
 
+_JOURNAL_MSG_RE = re.compile(r"^(\S+)\s+\S+\s+\S+?\[\d+\]:\s*(.*)$")
+
+
+def parse_hip_journal(text):
+    """Last HIP check / submission / warning from openconnect's journal lines (short-iso format)."""
+    out = {"lastCheck": "", "lastSubmit": "", "warning": "", "warningAt": ""}
+    for line in (text or "").splitlines():
+        m = _JOURNAL_MSG_RE.match(line.strip())
+        if not m:
+            continue
+        ts, msg = m.group(1), m.group(2)
+        low = msg.lower()
+        if "hipreportcheck" in low or "hip check due" in low:
+            out["lastCheck"] = ts
+        elif "hip report submitted" in low or "submitting hip report" in low:
+            out["lastSubmit"] = ts
+        if ("hip" in low or "csd" in low) and any(w in low for w in ("fail", "not compliant", "remediat", "reject", "denied")):
+            out["warning"], out["warningAt"] = msg, ts
+    return out
+
+
+def hip_journal_status(since="-1 day"):
+    try:
+        r = run(["journalctl", "-t", "openconnect", "-u", "NetworkManager", "--since", since, "-o", "short-iso", "--no-pager", "-n", "2000"], timeout=20)
+    except (OSError, subprocess.TimeoutExpired):
+        return parse_hip_journal("")
+    return parse_hip_journal(r.stdout if r.returncode == 0 else "")
+
+
 def gateway_host(name):
     """The host part of a portal gateway entry name ("gw.example.com:443" -> "gw.example.com")."""
     return re.sub(r":\d+$", "", str(name or "").strip())
@@ -453,18 +482,72 @@ def parse_portal_config(xml_text):
         "portalUserAuthCookie": (root.findtext("portal-userauthcookie") or "").strip(),
         "portalName": (root.findtext("portal-name") or "").strip(),
         "hipInterval": hip_interval,
+        "policy": parse_portal_policy(root),
     }
 
 
-def portal_config_body(portal, username, prelogin_cookie, client_os, hostname, password=""):
-    """The getconfig.esp form openconnect sends: user + prelogin-cookie after SAML, or user + passwd."""
+def _yes(text, default=False):
+    v = (text or "").strip().lower()
+    if v in ("yes", "1", "true"):
+        return True
+    if v in ("no", "0", "false"):
+        return False
+    return default
+
+
+def _int(text, default=0):
+    try:
+        return int((text or "").strip())
+    except ValueError:
+        return default
+
+
+def parse_portal_policy(root):
+    """The portal-driven app settings we honour (the official client's agent-config)."""
+    ac = root.find("agent-config")
+    ui = root.find("agent-ui")
+    ac_text = (lambda tag: ac.findtext(tag) if ac is not None else None)
+    ui_text = (lambda tag: ui.findtext(tag) if ui is not None else None)
+    welcome = ""
+    wp = ui.find("welcome-page") if ui is not None else None
+    if wp is not None and _yes(wp.findtext("display")):
+        welcome = (wp.findtext("page") or "").strip()
+    return {
+        "portalName": (root.findtext("portal-name") or "").strip(),
+        "version": (root.findtext("version") or "").strip(),
+        "configDigest": (root.findtext("config-digest") or "").strip(),
+        "connectMethod": (root.findtext("connect-method") or "").strip(),
+        "refreshConfigInterval": _int(root.findtext("refresh-config-interval"), 0) if _yes(root.findtext("refresh-config"), True) else 0,
+        "hipInterval": _int(root.findtext("./hip-collection/hip-report-interval"), 0),
+        "tunnelMtu": _int(ac_text("tunnel-mtu"), 0),
+        "sslOnly": _yes(ac_text("ssl-only-selection")),
+        "rediscoverNetwork": _yes(ac_text("rediscover-network"), True),
+        "enableSignout": _yes(ac_text("enable-signout"), True),
+        "defaultBrowser": _yes(ac_text("default-browser")),
+        "retryTunnel": _int(ac_text("retry-tunnel"), 0),
+        "retryTimeout": _int(ac_text("retry-timeout"), 0),
+        "captivePortalNotificationDelay": _int(ac_text("captive-portal-notification-delay"), 5),
+        "saveUserCredentials": _yes(ac_text("save-user-credentials")),
+        "canSavePassword": _yes(ui_text("can-save-password"), True),
+        "canChangePortal": _yes(ui_text("can-change-portal"), True),
+        "welcomePage": welcome,
+    }
+
+
+def portal_config_body(portal, username, prelogin_cookie, client_os, hostname, password="", userauthcookie=""):
+    """The getconfig.esp form openconnect sends: user + prelogin-cookie after SAML, user + passwd, or the portal cookie."""
     os_name = CLIENT_OS.get(client_os, "Windows")
     fields = [
         ("jnlpReady", "jnlpReady"), ("ok", "Login"), ("direct", "yes"), ("clientVer", "4100"), ("prot", "https:"),
         ("internal", "no"), ("ipv6-support", "yes"), ("clientos", os_name), ("os-version", OS_VERSIONS[os_name]),
         ("server", portal), ("computer", hostname), ("user", username),
     ]
-    fields.append(("passwd", password) if password else ("prelogin-cookie", prelogin_cookie))
+    if userauthcookie:
+        fields.append(("portal-userauthcookie", userauthcookie))
+    elif password:
+        fields.append(("passwd", password))
+    else:
+        fields.append(("prelogin-cookie", prelogin_cookie))
     return urllib.parse.urlencode(fields)
 
 
@@ -634,21 +717,82 @@ def debug_log(msg):
         pass
 
 
-def load_state():
+def _read_json(path):
     try:
-        return json.loads((state_dir() / "state.json").read_text())
+        return json.loads(Path(path).read_text())
     except (FileNotFoundError, ValueError):
         return {}
 
 
-def save_state(**kv):
-    s = load_state()
-    s.update({k: v for k, v in kv.items() if v is not None})
-    p = state_dir() / "state.json"
-    fd = os.open(p, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+def _write_json(path, data):
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
     with os.fdopen(fd, "w") as f:
-        f.write(json.dumps(s))
-    p.chmod(0o600)
+        f.write(json.dumps(data))
+    Path(path).chmod(0o600)
+
+
+def _portal_state_path(portal):
+    return _private_dir(state_dir() / "portals") / (str(portal).replace("/", "_") + ".json")
+
+
+def load_state(portal=None):
+    """Global state (the current portal) merged with that portal's own bucket.
+
+    state.json keeps `portal` (and, for a fresh install, any pre-multi-portal keys); everything
+    else lives in portals/<host>.json so switching portals keeps sessions and gateway lists apart.
+    """
+    base = _read_json(state_dir() / "state.json")
+    current = portal or base.get("portal", "")
+    if not current:
+        return dict(base)
+    bucket_path = _portal_state_path(current)
+    bucket = _read_json(bucket_path)
+    legacy = {k: v for k, v in base.items() if k != "portal"}
+    if not bucket and legacy and current == base.get("portal", ""):
+        # One-time migration from the flat layout.
+        bucket = legacy
+        _write_json(bucket_path, bucket)
+    out = {"portal": base.get("portal", "")}
+    out.update(bucket)
+    return out
+
+
+def save_state(**kv):
+    """`portal` goes to state.json (and becomes current); other keys go to the portal's bucket."""
+    kv = {k: v for k, v in kv.items() if v is not None}
+    base = _read_json(state_dir() / "state.json")
+    if "portal" in kv:
+        base["portal"] = kv.pop("portal")
+        _write_json(state_dir() / "state.json", base)
+    current = base.get("portal", "")
+    if not kv:
+        return
+    if not current:
+        base.update(kv)
+        _write_json(state_dir() / "state.json", base)
+        return
+    path = _portal_state_path(current)
+    bucket = _read_json(path)
+    bucket.update(kv)
+    _write_json(path, bucket)
+
+
+def known_portals():
+    try:
+        return sorted(p.stem for p in (state_dir() / "portals").glob("*.json"))
+    except OSError:
+        return []
+
+
+def forget_portal(portal):
+    try:
+        _portal_state_path(portal).unlink()
+    except FileNotFoundError:
+        pass
+    base = _read_json(state_dir() / "state.json")
+    if base.get("portal") == portal:
+        base["portal"] = ""
+        _write_json(state_dir() / "state.json", base)
 
 
 # --------------------------------------------------------------------------- system probes
@@ -737,8 +881,9 @@ def resolve_host(host):
     return ""
 
 
-def fetch_portal_config(portal, username, prelogin_cookie, client_os, timeout=30, password=""):
-    body = portal_config_body(portal, username, prelogin_cookie, client_os, socket.gethostname(), password=password).encode()
+def fetch_portal_config(portal, username, prelogin_cookie, client_os, timeout=30, password="", userauthcookie=""):
+    body = portal_config_body(portal, username, prelogin_cookie, client_os, socket.gethostname(),
+                              password=password, userauthcookie=userauthcookie).encode()
     url = f"https://{portal}/global-protect/getconfig.esp"
     req = urllib.request.Request(url, data=body, method="POST",
                                  headers={"User-Agent": "PAN GlobalProtect", "Content-Type": "application/x-www-form-urlencoded"})
@@ -809,6 +954,9 @@ def status_json(portal):
         "ip6": "",
         "resolver": {"dns": [], "domains": [], "active": False, "defaultRoute": False},
         "splitDns": split_dns_state() if deps["nmOpenconnect"] else "not-needed",
+        "portals": known_portals(),
+        "policy": state_file.get("policy") or {},
+        "welcomeAvailable": bool((state_file.get("policy") or {}).get("welcomePage")),
         "detail": "",
         "deps": deps,
     }
@@ -1767,6 +1915,46 @@ def cmd_disconnect(args):
         fail(str(e))
 
 
+def show_html_window(title, html, size=(560, 640)):
+    """A themed WebKit window showing portal-provided HTML (welcome / help page)."""
+    import warnings
+    import gi
+    warnings.filterwarnings("ignore", category=DeprecationWarning)
+    gi.require_version("Gtk", "3.0")
+    gi.require_version("WebKit2", "4.1")
+    from gi.repository import GLib
+    GLib.set_prgname(APP)
+    from gi.repository import Gtk, WebKit2
+    _gtk()
+    win = Gtk.Window(title=title)
+    win.set_wmclass(APP, APP)
+    win.set_default_size(*size)
+    view = WebKit2.WebView()
+    view.load_html(html, "about:blank")
+    win.add(view)
+    win.connect("destroy", Gtk.main_quit)
+    win.show_all()
+    Gtk.main()
+
+
+def cmd_welcome(args):
+    """The portal's welcome page: --show opens it in a window, otherwise the HTML is printed."""
+    portal = resolve_portal(args)
+    page = ((load_state(portal).get("policy") or {}).get("welcomePage") or "") if portal else ""
+    if not page:
+        fail("The portal has no welcome page", 1)
+    if args.show:
+        save_state(portal=portal, welcomeShown=(load_state(portal).get("policy") or {}).get("configDigest", ""))
+        show_html_window(f"Welcome · {portal}", page)
+    else:
+        sys.stdout.write(page + "\n")
+
+
+def cmd_hip_status(args):
+    """Last HIP check and submission seen in openconnect's journal, plus any warning."""
+    print(json.dumps(hip_journal_status()))
+
+
 def cmd_split_dns_rule(args):
     """Prints the polkit rule the enable-split-dns helper installs (via pkexec)."""
     sys.stdout.write(split_dns_rule())
@@ -1791,16 +1979,25 @@ def cmd_callback(args):
 
 
 def cmd_forget(args):
+    """Drop the stored session for a portal; --remove also drops the portal itself (its gateways, policy, everything)."""
     portal = resolve_portal(args)
     if portal:
         keyring_clear(portal)
+    if args.remove and portal:
+        forget_portal(portal)
+        return
+    if portal:
+        path = _portal_state_path(portal)
+        bucket = _read_json(path)
+        for k in ("username", "gateway", "gatewayIp"):
+            bucket.pop(k, None)
+        _write_json(path, bucket)
+    else:
+        base = _read_json(state_dir() / "state.json")
+        for k in ("username", "gateway", "gatewayIp"):
+            base.pop(k, None)
+        _write_json(state_dir() / "state.json", base)
     shutil.rmtree(data_dir() / "webkit", ignore_errors=True)
-    s = load_state()
-    s.pop("username", None)
-    s.pop("gateway", None)
-    p = state_dir() / "state.json"
-    p.write_text(json.dumps(s))
-    p.chmod(0o600)
 
 
 def cmd_status(args):
@@ -1880,16 +2077,30 @@ def cmd_gateways(args):
         fail("No portal configured")
     try:
         if args.refresh:
-            kind, cookie, username, _iface, _host = sign_in(portal, args.client_os, "portal", announce=False)
-            if kind == "password":
-                cfg = fetch_portal_config(portal, username, "", args.client_os, password=cookie)
-            elif kind == "prelogin-cookie":
-                cfg = fetch_portal_config(portal, username, cookie, args.client_os)
-            else:
-                raise PortalConfigError("Portal sign-in returned no prelogin cookie")
+            cfg = None
+            state0 = load_state(portal)
+            stored = keyring_lookup(portal)
+            if stored and state0.get("username"):
+                try:  # the portal cookie makes this a silent refresh (what the official client does on its interval)
+                    cfg = fetch_portal_config(portal, state0["username"], "", args.client_os, userauthcookie=stored)
+                    debug_log("portal config refreshed silently with the stored portal cookie")
+                except PortalConfigError as e:
+                    debug_log(f"silent portal refresh failed: {e}")
+                    cfg = None
+            if cfg is None and args.quiet:
+                fail("Silent refresh needs a valid portal session", 4)
+            if cfg is None:
+                kind, cookie, username, _iface, _host = sign_in(portal, args.client_os, "portal", announce=False)
+                if kind == "password":
+                    cfg = fetch_portal_config(portal, username, "", args.client_os, password=cookie)
+                elif kind == "prelogin-cookie":
+                    cfg = fetch_portal_config(portal, username, cookie, args.client_os)
+                else:
+                    raise PortalConfigError("Portal sign-in returned no prelogin cookie")
             if cfg["portalUserAuthCookie"]:
                 keyring_store(portal, cfg["portalUserAuthCookie"])
-            save_state(gateways=cfg["gateways"], gatewaysFetchedAt=int(time.time()), portalName=cfg["portalName"], hipInterval=cfg["hipInterval"])
+            save_state(portal=portal, gateways=cfg["gateways"], gatewaysFetchedAt=int(time.time()), portalName=cfg["portalName"],
+                       hipInterval=cfg["hipInterval"], policy=cfg["policy"])
         state = load_state()
         if args.probe and state.get("gateways"):
             save_state(latencies=probe_gateways(state["gateways"]), probedAt=int(time.time()))
@@ -1903,6 +2114,7 @@ def cmd_gateways(args):
     print(json.dumps({
         "portal": portal,
         "portalName": state.get("portalName", ""),
+        "policy": state.get("policy") or {},
         "gateways": [dict(g, latencyMs=lat.get(g["host"], -1) if g["host"] in lat else None) for g in gws],
         "fetchedAt": state.get("gatewaysFetchedAt", 0),
         "probedAt": state.get("probedAt", 0),
@@ -1957,6 +2169,8 @@ def main(argv=None):
         ("gateways", cmd_gateways, "list the portal's gateways (--refresh fetches, --probe measures latency)"),
         ("callback", cmd_callback, "internal: receive a globalprotectcallback: URI from the browser"),
         ("split-dns-rule", cmd_split_dns_rule, "print the polkit rule that lets the widget set the tunnel's DNS"),
+        ("welcome", cmd_welcome, "the portal's welcome page (--show opens it in a window)"),
+        ("hip-status", cmd_hip_status, "last HIP check/submission from openconnect's journal"),
     ):
         sp = sub.add_parser(name, help=help_text)
         common(sp)
@@ -1965,8 +2179,13 @@ def main(argv=None):
         if name == "gateways":
             sp.add_argument("--refresh", action="store_true", help="sign in at the portal and fetch the gateway list")
             sp.add_argument("--probe", action="store_true", help="measure TLS latency to each gateway")
+            sp.add_argument("--quiet", action="store_true", help="refresh only if it can be done without a sign-in window (exit 4 otherwise)")
         if name == "callback":
             sp.add_argument("uri", help="the globalprotectcallback: URI")
+        if name == "welcome":
+            sp.add_argument("--show", action="store_true", help="open the page in a window instead of printing it")
+        if name == "forget":
+            sp.add_argument("--remove", action="store_true", help="also remove the portal from the known list")
         sp.set_defaults(fn=fn)
     args = p.parse_args(argv)
     set_debug(args.debug or os.environ.get("OMARCHY_GP_DEBUG") == "1")
