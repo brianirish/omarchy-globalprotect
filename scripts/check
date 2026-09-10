@@ -4,6 +4,11 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 python3 -m py_compile bin/omarchy-globalprotect
 python3 -m unittest discover -s tests -v
+if command -v node >/dev/null; then
+  node tests/model_test.js
+else
+  echo "check: node not found, skipping tests/model_test.js"
+fi
 if command -v omarchy >/dev/null && [ -f Panel.qml ]; then
   omarchy plugin validate .
 fi

@@ -106,10 +106,10 @@ Pick where you land.
 
 ### v0.4 — Always-On
 
-- [ ] User-logon connect method: connect at shell start and when connectivity returns
-- [ ] Backoff and "pause for N minutes"
-- [ ] Captive portal detection with notification delay
-- [ ] Reconnect after suspend, with re-auth when the cookie expired
+- [x] User-logon connect method: connect at shell start and when connectivity returns
+- [x] Backoff and "pause for N minutes"
+- [x] Captive portal detection with notification delay
+- [x] Reconnect after suspend, with re-auth when the cookie expired
 
 ### v0.5 — Sign-in options
 

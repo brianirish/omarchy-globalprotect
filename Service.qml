@@ -25,6 +25,8 @@ Item {
   readonly property bool hipReport: setting("hipReport", false) === true
   readonly property string authInterface: ["auto", "portal", "gateway"].indexOf(String(setting("authInterface", "auto"))) >= 0 ? String(setting("authInterface", "auto")) : "auto"
   readonly property bool debug: setting("debug", false) === true
+  readonly property bool alwaysOn: String(setting("connectMethod", "on-demand")) === "always-on"
+  readonly property int pauseMinutes: Math.min(1440, Math.max(1, parseInt(String(setting("pauseMinutes", 30)), 10) || 30))
   readonly property int refreshIntervalSec: Math.min(120, Math.max(2, parseInt(String(setting("refreshIntervalSec", 5)), 10) || 5))
 
   // unconfigured | missing-deps | disconnected | authenticating | activating | connected | error
@@ -42,6 +44,7 @@ Item {
   property var txHistory: []
   property string username: ""
   property bool hasSession: false
+  property string connectivity: "unknown"
   property string protocol: ""
   property string gatewayIp: ""
   property var routes: []
@@ -52,6 +55,14 @@ Item {
   property string actionStatus: ""
   property string lastError: ""
   property var hostState: Model.normalizeHostState(null)
+  // Always-On / tunnel restoration bookkeeping (see Model.autoConnectDecision).
+  property double pausedUntil: 0
+  property int failures: 0
+  property double nextAttemptAt: 0
+  property bool wantRestore: false
+  property bool captiveNotified: false
+  property string autoReason: ""
+  readonly property bool paused: pausedUntil > Date.now()
   property var gatewayList: Model.normalizeGateways(null)
   property string gatewaysError: ""
   readonly property bool gatewaysBusy: gatewaysProc.running
@@ -104,6 +115,7 @@ Item {
     since = s.since
     username = s.username
     hasSession = s.hasSession
+    connectivity = s.connectivity
     protocol = s.protocol
     gatewayIp = s.gatewayIp
     routes = s.routes
@@ -114,10 +126,54 @@ Item {
     if (s.state === "connected") sample(s.rxBytes, s.txBytes)
     else resetSamples()
     if (_desired !== -1 && !connectProc.running && !disconnectProc.running && connected === (_desired === 1)) _desired = -1
-    if (previous === "connected" && state !== "connected" && !disconnectProc.running && _desired !== 0)
-      notify("Disconnected", "The GlobalProtect tunnel went down", "network-vpn-disconnected")
+    if (previous === "connected" && state !== "connected" && !disconnectProc.running && _desired !== 0 && !reconnectAfterDown.running) {
+      // Not our doing: restore it (the official client's tunnel restoration), re-signing in if the cookie expired.
+      wantRestore = true
+      notify("Disconnected", "The GlobalProtect tunnel went down; reconnecting", "network-vpn-disconnected")
+    }
     if (state === "connected" && previous !== "connected" && previous !== "")
       notify("Connected", gatewayHost !== "" ? "Through " + gatewayHost : "The GlobalProtect tunnel is up", "network-vpn")
+    if (state === "connected") { wantRestore = false; failures = 0; nextAttemptAt = 0 }
+    evaluateAuto()
+  }
+
+  function evaluateAuto() {
+    var now = Date.now()
+    var d = Model.autoConnectDecision({
+      alwaysOn: alwaysOn, restore: wantRestore, configured: configured, depsOk: depsOk, state: state,
+      connectivity: connectivity, pausedUntil: pausedUntil, now: now, nextAttemptAt: nextAttemptAt,
+      inFlight: connectProc.running || disconnectProc.running || reconnectAfterDown.running, userOff: _desired === 0
+    })
+    autoReason = d.action === "none" && d.reason !== "paused" ? "" : d.reason
+    if (connectivity === "full") captiveNotified = false
+    if (d.reason === "captive" && !captiveNotified) {
+      captiveNotified = true
+      notify("Captive portal", "Sign in to this network first; GlobalProtect connects afterwards", "network-wireless-hotspot")
+    }
+    if (d.action === "connect") connectVpn(false)
+  }
+
+  function pause(minutes) {
+    pausedUntil = Date.now() + minutes * 60000
+    wantRestore = false
+    failures = 0
+    nextAttemptAt = 0
+    flash("Always-On paused for " + minutes + " min")
+    evaluateAuto()
+  }
+
+  function resume() {
+    pausedUntil = 0
+    nextAttemptAt = 0
+    failures = 0
+    flash("Always-On resumed")
+    evaluateAuto()
+  }
+
+  function togglePause() {
+    if (!alwaysOn) return
+    if (paused) resume()
+    else pause(pauseMinutes)
   }
 
   function sample(rx, tx) {
@@ -151,6 +207,7 @@ Item {
   function connectVpn(fresh) {
     if (!configured || connectProc.running) return
     if (!depsOk) { lastError = "Install networkmanager-openconnect first"; return }
+    pausedUntil = 0
     _desired = 1
     lastError = ""
     _connectErr = ""
@@ -164,6 +221,9 @@ Item {
     if (disconnectProc.running) return
     _desired = 0
     lastError = ""
+    wantRestore = false
+    // Turning Always-On off by hand means "leave me alone for a while" (the official client's Disable).
+    if (alwaysOn) { pausedUntil = Date.now() + pauseMinutes * 60000; flash("Disconnecting · Always-On paused for " + pauseMinutes + " min") }
     if (connectProc.running) { connectProc.signal(15); return }
     disconnectProc.command = cliArgs("disconnect")
     disconnectProc.running = true
@@ -272,6 +332,8 @@ Item {
   }
 
   Timer { id: monitorDebounce; interval: 400; repeat: false; onTriggered: root.refresh() }
+  // Always-On heartbeat: cheap, and it is what turns "retry in 30 s" into an attempt.
+  Timer { id: autoTick; interval: 5000; repeat: true; running: root.cliPath !== "" && (root.alwaysOn || root.wantRestore); onTriggered: root.evaluateAuto() }
   Timer { id: delayedRefresh; interval: 600; repeat: false; onTriggered: root.refresh() }
   Timer { id: actionStatusTimer; interval: 2200; repeat: false; onTriggered: root.actionStatus = "" }
   // Comes back after a deliberate disconnect: fresh=true forces the sign-in
@@ -331,14 +393,25 @@ Item {
         disconnectProc.running = true
       } else if (code === 0) {
         root.lastError = ""
+        root.failures = 0
+        root.nextAttemptAt = 0
+        root.wantRestore = false
       } else if (code === 2) {
         root._desired = -1
         root.state = "disconnected"
-        root.flash("Sign-in cancelled")
+        if (root.alwaysOn || root.wantRestore) {
+          root.wantRestore = false
+          root.pausedUntil = Date.now() + root.pauseMinutes * 60000
+          root.flash("Sign-in cancelled · Always-On paused for " + root.pauseMinutes + " min")
+        } else {
+          root.flash("Sign-in cancelled")
+        }
       } else {
         root._desired = -1
         root.state = "error"
         root.lastError = root._connectErr !== "" ? root._connectErr : "Connection failed"
+        root.failures += 1
+        root.nextAttemptAt = Date.now() + Model.nextBackoffMs(root.failures)
         root.notify("Connection failed", root.lastError, "dialog-error")
       }
       delayedRefresh.restart()

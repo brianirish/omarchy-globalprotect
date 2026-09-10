@@ -1,5 +1,17 @@
 # Changelog
 
+## Unreleased
+
+- *Always-On* connect method (`connectMethod: always-on`): connects when the shell
+  starts and whenever NetworkManager reports full connectivity again; failures back off
+  30 s → 10 min; a captive portal is announced instead of attempted; flipping the switch
+  off or cancelling the sign-in pauses it for `pauseMinutes` (default 30, `p` to resume).
+- Tunnel restoration in both modes: a tunnel that drops without you asking is
+  reconnected, with a fresh sign-in if the session expired.
+- `status` reports NetworkManager's `connectivity` (full, limited, portal, none).
+- Model.js now has unit tests (`node tests/model_test.js`, run by `scripts/check` when
+  Node is installed).
+
 ## 0.3.0 — 2026-09-10
 
 - *Gateways* section: fetch the portal's gateway list (`gateways --refresh`, `g` key),

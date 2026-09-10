@@ -14,11 +14,15 @@ no password prompts once installed.
   usually a window that flashes and closes. When the portal hands back a
   reusable session cookie it is kept in your keyring and reused until it expires.
 - **Keyboard-first** like the stock panels: `j`/`k` move, `Enter` activates,
-  `t` toggles, `c` copies the address, `n` rediscovers the network, `g` refreshes gateways, `l` collects logs, `s` signs in again, `f` forgets the session, `Esc` closes.
+  `t` toggles, `c` copies the address, `n` rediscovers the network, `g` refreshes gateways, `p` pauses or resumes Always-On, `l` collects logs, `s` signs in again, `f` forgets the session, `Esc` closes.
 - **NetworkManager owns the tunnel**, so routes, DNS, and teardown behave like any
   other NM VPN, and `nmcli connection down GlobalProtect` works from a terminal too.
   The profile is persistent: a Wi-Fi roam, cable swap, or resume from suspend makes
-  openconnect reconnect with the same session instead of dropping the tunnel.
+  openconnect reconnect with the same session instead of dropping the tunnel. If the
+  tunnel still drops, the widget restores it (signing in again if the session expired).
+- **Always-On** (optional): connect at login and whenever the network comes back, with
+  30 s → 10 min backoff on failures, a captive-portal notice instead of a doomed attempt,
+  and a pause (default 30 min, `p`) when you flip the switch off.
 
 ## Install
 
@@ -67,6 +71,9 @@ If the portal refuses the connection, check the panel's settings section:
   nftables, and DNF).
 - **Reported client OS** (`clientOs` in `shell.json`, default `win`): many portals
   only allow Windows and macOS clients. Set it to `linux` if yours accepts Linux.
+- **Connect method** (`connectMethod`: `on-demand` or `always-on`, and `pauseMinutes`):
+  the *Always-On* toggle in the panel. Turning the switch off while Always-On pauses it
+  for `pauseMinutes`; cancelling the sign-in window does the same.
 
 To keep the sign-in window floating and centered, add this to `~/.config/hypr/hyprland.lua`:
 
@@ -106,7 +113,7 @@ Where things live:
 
 | What | Where |
 |------|-------|
-| Portal, gateway, HIP, client OS settings | this widget's entry in `~/.config/omarchy/shell.json` |
+| Portal, gateway, HIP, client OS, connect method settings | this widget's entry in `~/.config/omarchy/shell.json` |
 | Google session (WebKit website data) | `~/.local/share/omarchy-globalprotect/webkit/` (0700) |
 | Reusable portal session cookie | GNOME keyring, `application=omarchy-globalprotect` |
 | Last gateway / username / cached gateway list | `~/.local/state/omarchy-globalprotect/state.json` |
@@ -133,7 +140,7 @@ Where things live:
 ## Development
 
 ```bash
-scripts/check          # py_compile + unit tests + omarchy plugin validate
+scripts/check          # py_compile + Python unit tests + Model.js tests (node) + omarchy plugin validate
 ```
 
 The plugin directory is a plain git checkout; the shell hot-reloads QML on

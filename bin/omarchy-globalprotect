@@ -367,6 +367,15 @@ def hip_report_command(script, username, hostname, ip, client_os):
             "--client-os", CLIENT_OS.get(client_os, "Windows")]
 
 
+CONNECTIVITY = ("full", "limited", "portal", "none")
+
+
+def parse_connectivity(text):
+    """nmcli's connectivity word normalized: full | limited | portal | none | unknown."""
+    v = (text or "").strip().lower()
+    return v if v in CONNECTIVITY else "unknown"
+
+
 def derive_state(conn_state, runfile, portal, deps):
     if not portal:
         return "unconfigured"
@@ -499,6 +508,14 @@ def nm_connection_state():
     return None
 
 
+def nm_connectivity():
+    try:
+        r = run(["nmcli", "-t", "-f", "CONNECTIVITY", "general"], timeout=5)
+    except (OSError, subprocess.TimeoutExpired):
+        return "unknown"
+    return parse_connectivity(r.stdout) if r.returncode == 0 else "unknown"
+
+
 def nm_connection_details():
     try:
         r = run(["nmcli", "-t", "connection", "show", NM_CONNECTION])
@@ -612,6 +629,7 @@ def status_json(portal):
         "since": 0,
         "rxBytes": 0,
         "txBytes": 0,
+        "connectivity": nm_connectivity() if deps["nmOpenconnect"] else "unknown",
         "protocol": "",
         "gatewayIp": "",
         "routes": [],

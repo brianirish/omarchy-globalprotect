@@ -25,7 +25,9 @@
       "hipReport": false,
       "refreshIntervalSec": 5,
       "authInterface": "auto",
-      "debug": false
+      "debug": false,
+      "connectMethod": "on-demand",
+      "pauseMinutes": 30
     },
     "schema": [
       {
@@ -66,6 +68,20 @@
         "key": "debug",
         "type": "boolean",
         "label": "Debug logging"
+      },
+      {
+        "key": "connectMethod",
+        "type": "string",
+        "label": "Connect method (on-demand, always-on)"
+      },
+      {
+        "key": "pauseMinutes",
+        "type": "integer",
+        "label": "Always-On pause (minutes)",
+        "min": 1,
+        "max": 1440,
+        "step": 5,
+        "defaultValue": 30
       }
     ]
   }

@@ -25,7 +25,8 @@ Panel {
   readonly property string fontFamily: bar ? bar.fontFamily : Style.font.family
   readonly property color barIconColor: gp.active ? barForeground : Qt.darker(barForeground, 1.55)
   readonly property string iconState: gp.state === "error" ? "error" : (gp.transitioning ? "busy" : (gp.connected ? "on" : "off"))
-  readonly property string heroMeta: gp.connected ? Model.PHRASES[phraseIndex % Model.PHRASES.length] : Model.stateText(gp.state, gp.portal)
+  readonly property string autoMeta: gp.transitioning ? "" : Model.autoText(gp.autoReason, gp.pausedUntil, gp.nextAttemptAt, nowMs)
+  readonly property string heroMeta: gp.connected ? Model.PHRASES[phraseIndex % Model.PHRASES.length] : (autoMeta !== "" ? autoMeta : Model.stateText(gp.state, gp.portal))
   readonly property string statusLine: gp.actionStatus !== "" ? gp.actionStatus : gp.lastError
   readonly property bool statusIsError: gp.actionStatus === "" && gp.lastError !== ""
   readonly property bool showSession: gp.connected
@@ -34,7 +35,7 @@ Panel {
   readonly property bool showInstall: gp.configured && gp.everPolled && !gp.depsOk
   readonly property var cursorRows: rowsForCursor()
   readonly property string cursorRow: cursorActive && cursorRows.length > 0 ? cursorRows[Math.max(0, Math.min(cursorIndex, cursorRows.length - 1))] : ""
-  readonly property string toggleHint: !gp.configured ? "Set a portal first" : (!gp.depsOk ? "Install the NetworkManager plugin first" : (gp.active ? "Disconnect" : "Connect through Google SSO"))
+  readonly property string toggleHint: !gp.configured ? "Set a portal first" : (!gp.depsOk ? "Install the NetworkManager plugin first" : (gp.active ? (gp.alwaysOn ? "Disconnect and pause Always-On for " + gp.pauseMinutes + " min" : "Disconnect") : "Connect through Google SSO"))
 
   property int phraseIndex: 0
   property bool cursorActive: false
@@ -53,6 +54,7 @@ Panel {
       rows.push("gwrefresh")
     }
     if (gp.configured && gp.everPolled && !gp.depsOk) rows.push("install")
+    if (gp.configured && gp.alwaysOn && gp.paused) rows.push("resume")
     if (gp.configured) rows.push("logs")
     return rows
   }
@@ -73,6 +75,7 @@ Panel {
     else if (row === "forget") openForget()
     else if (row === "install") installDeps()
     else if (row === "logs") gp.collectLogs()
+    else if (row === "resume") gp.resume()
     else if (row === "gw:auto") selectGateway("")
     else if (row === "gwrefresh") gp.refreshGateways()
     else if (row.indexOf("gw:") === 0) {
@@ -265,6 +268,7 @@ Panel {
         else if (k === "n") gp.rediscover()
         else if (k === "l") gp.collectLogs()
         else if (k === "g") gp.refreshGateways()
+        else if (k === "p") gp.togglePause()
         else if (k === "f") gpPanel.openForget()
       }
 
@@ -765,6 +769,33 @@ Panel {
               foreground: gpPanel.foreground
               fontFamily: gpPanel.fontFamily
               onClicked: gpPanel.saveSetting("hipReport", !gp.hipReport)
+            }
+
+            Toggle {
+              width: parent.width
+              label: "Always-On"
+              description: gp.alwaysOn
+                ? "Connects at login and whenever the network returns; the switch pauses it for " + gp.pauseMinutes + " min"
+                : "Connect at login and whenever the network returns (the official client's user-logon mode)"
+              checked: gp.alwaysOn
+              foreground: gpPanel.foreground
+              fontFamily: gpPanel.fontFamily
+              onClicked: gpPanel.saveSetting("connectMethod", gp.alwaysOn ? "on-demand" : "always-on")
+            }
+
+            Button {
+              visible: gp.alwaysOn && gp.paused
+              width: parent.width
+              iconText: ""
+              text: "Resume Always-On now"
+              fontSize: Style.font.bodySmall
+              foreground: gpPanel.foreground
+              fontFamily: gpPanel.fontFamily
+              bordered: true
+              hasCursor: gpPanel.cursorRow === "resume"
+              horizontalPadding: Style.spacing.controlPaddingX
+              verticalPadding: Style.spacing.controlPaddingY
+              onClicked: gp.resume()
             }
 
             Toggle {

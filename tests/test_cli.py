@@ -216,6 +216,23 @@ class StatusJsonTests(unittest.TestCase):
         self.assertEqual(s["dns"], ["10.0.0.53"])
         self.assertEqual(s["searchDomains"], ["corp.example.com"])
 
+    def test_status_reports_nm_connectivity(self):
+        with tempfile.TemporaryDirectory() as d, unittest.mock.patch.dict(os.environ, {"XDG_STATE_HOME": d, "XDG_RUNTIME_DIR": d}):
+            with unittest.mock.patch.object(gp, "check_deps", return_value={"openconnect": True, "nmOpenconnect": True, "webkit": True}), \
+                 unittest.mock.patch.object(gp, "nm_connection_state", return_value="inactive"), \
+                 unittest.mock.patch.object(gp, "nm_connectivity", return_value="portal"), \
+                 unittest.mock.patch.object(gp, "keyring_has", return_value=False):
+                s = gp.status_json("vpn.example.com")
+        self.assertEqual(s["connectivity"], "portal")
+
+    def test_parse_connectivity_normalizes_values(self):
+        self.assertEqual(gp.parse_connectivity("full\n"), "full")
+        self.assertEqual(gp.parse_connectivity("portal"), "portal")
+        self.assertEqual(gp.parse_connectivity("limited"), "limited")
+        self.assertEqual(gp.parse_connectivity("none"), "none")
+        self.assertEqual(gp.parse_connectivity("weird"), "unknown")
+        self.assertEqual(gp.parse_connectivity(""), "unknown")
+
     def test_unconfigured_has_empty_tunnel_details(self):
         with tempfile.TemporaryDirectory() as d, unittest.mock.patch.dict(os.environ, {"XDG_STATE_HOME": d, "XDG_RUNTIME_DIR": d}):
             with unittest.mock.patch.object(gp, "check_deps", return_value={"openconnect": True, "nmOpenconnect": True, "webkit": True}):
