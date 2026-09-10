@@ -27,6 +27,10 @@ CLIENT_OS = {"win": "Windows", "linux": "Linux", "mac": "Mac"}
 COOKIE_KINDS = ("prelogin-cookie", "portal-userauthcookie")
 SAML_FIELDS = COOKIE_KINDS + ("saml-username", "saml-auth-status")
 HIP_SCRIPTS = ("/usr/lib/openconnect/hipreport.sh", "/usr/libexec/openconnect/hipreport.sh")
+AUTH_INTERFACES = ("auto", "portal", "gateway")
+# Some deployments require SAML at the gateway as well as (or instead of) the portal;
+# "auto" probes the gateway interface on the configured host first, then the portal.
+PRELOGIN_PATHS = {"portal": "global-protect/prelogin.esp", "gateway": "ssl-vpn/prelogin.esp"}
 
 
 class PreloginError(Exception):
@@ -294,6 +298,7 @@ def status_json(portal):
         "portal": portal,
         "gateway": state_file.get("gateway", ""),
         "username": state_file.get("username", ""),
+        "authInterface": state_file.get("authInterface", ""),
         "hasSession": keyring_has(portal) if portal else False,
         "iface": "",
         "ip4": "",
@@ -306,7 +311,8 @@ def status_json(portal):
     if state == "connected":
         d = nm_connection_details()
         ip = d.get("IP4.ADDRESS[1]", "").split("/")[0]
-        iface = d.get("GENERAL.IP-IFACE") or find_iface_for_ip(ip)
+        # nmcli's IP-IFACE is the base device for VPNs; the tunnel (vpn0) is whichever device holds the VPN address.
+        iface = (find_iface_for_ip(ip) if ip else "") or d.get("GENERAL.IP-IFACE", "")
         rx, tx = iface_stats(iface) if iface else (0, 0)
         try:
             since = int(d.get("connection.timestamp") or 0)
@@ -343,7 +349,10 @@ def run_sso_window(portal, method, request, timeout_s=300):
     Raises Cancelled when the user closes the window, AuthError on timeout or load failure.
     """
     import signal
+    import warnings
     import gi
+    # GTK 3 / PyGObject deprecation notices are noise on stderr for our purposes.
+    warnings.filterwarnings("ignore", category=DeprecationWarning)
     gi.require_version("Gtk", "3.0")
     gi.require_version("Gdk", "3.0")
     gi.require_version("WebKit2", "4.1")
@@ -351,6 +360,11 @@ def run_sso_window(portal, method, request, timeout_s=300):
     from gi.repository import GLib
     GLib.set_prgname(APP)  # becomes the Wayland app_id; must precede Gtk init
     from gi.repository import Gdk, Gtk, WebKit2
+    try:
+        from gi import PyGIDeprecationWarning
+        warnings.filterwarnings("ignore", category=PyGIDeprecationWarning)
+    except ImportError:
+        pass
 
     colors = theme_colors()
     wk = _private_dir(data_dir() / "webkit")
@@ -508,12 +522,32 @@ def run_sso_window(portal, method, request, timeout_s=300):
 
 # --------------------------------------------------------------------------- portal + openconnect
 
-def prelogin(portal, client_os, timeout=20):
+def prelogin_url(host, interface):
+    return f"https://{host}/{PRELOGIN_PATHS[interface]}"
+
+
+def interfaces_to_try(setting):
+    s = str(setting or "auto").strip().lower()
+    return [s] if s in ("portal", "gateway") else ["gateway", "portal"]
+
+
+def pick_prelogin(portal, client_os, setting):
+    """Return (interface, prelogin result) for the first interface that offers SAML."""
+    last = None
+    for iface in interfaces_to_try(setting):
+        try:
+            return iface, prelogin(portal, client_os, interface=iface)
+        except PreloginError as e:
+            last = e
+    raise last
+
+
+def prelogin(portal, client_os, timeout=20, interface="portal"):
     body = urllib.parse.urlencode({
         "tmp": "tmp", "kerberos-support": "yes", "ipv6-support": "yes", "clientVer": "4100", "clientos": client_os,
     }).encode()
     req = urllib.request.Request(
-        f"https://{portal}/global-protect/prelogin.esp", data=body, method="POST",
+        prelogin_url(portal, interface), data=body, method="POST",
         headers={"User-Agent": "PAN GlobalProtect", "Content-Type": "application/x-www-form-urlencoded"},
     )
     try:
@@ -525,12 +559,12 @@ def prelogin(portal, client_os, timeout=20):
         raise PreloginError(f"Could not reach {portal}: {e}")
 
 
-def authenticate_command(portal, cookie_kind, username, client_os, gateway, hip_script):
+def authenticate_command(portal, cookie_kind, username, client_os, gateway, hip_script, interface="portal"):
     cmd = [
         "openconnect", "--protocol=gp", "--authenticate", "--non-inter", f"--os={client_os}", f"--user={username}",
-        f"--usergroup=portal:{cookie_kind}", "--passwd-on-stdin",
+        f"--usergroup={interface}:{cookie_kind}", "--passwd-on-stdin",
     ]
-    if gateway:
+    if gateway and interface == "portal":
         cmd.append(f"--authgroup={gateway}")
     if hip_script:
         cmd.append(f"--csd-wrapper={hip_script}")
@@ -544,10 +578,10 @@ def last_meaningful_line(text):
     return lines[-1][:200] if lines else ""
 
 
-def authenticate(portal, cookie_kind, cookie, username, client_os, gateway, hip_script, timeout=60):
+def authenticate(portal, cookie_kind, cookie, username, client_os, gateway, hip_script, timeout=60, interface="portal"):
     """Exchange a SAML cookie for a session cookie; the cookie travels over stdin only."""
     try:
-        r = run(authenticate_command(portal, cookie_kind, username, client_os, gateway, hip_script), timeout=timeout, input_text=cookie + "\n")
+        r = run(authenticate_command(portal, cookie_kind, username, client_os, gateway, hip_script, interface), timeout=timeout, input_text=cookie + "\n")
     except subprocess.TimeoutExpired:
         raise AuthError("openconnect timed out talking to the portal")
     except OSError as e:
@@ -609,18 +643,28 @@ def current_user():
         return os.getlogin()
 
 
+def nm_profile_command(exists, data):
+    """nmcli argv that creates or updates the GlobalProtect profile.
+
+    The profile is a system connection on purpose: nm-openconnect rejects
+    "private" connections (ones scoped with connection.permissions), and the
+    wheel + local-session polkit rule lets us manage system connections
+    without a prompt anyway. modify also clears any permissions left over from
+    an older profile.
+    """
+    if not exists:
+        return ["nmcli", "connection", "add", "type", "vpn", "con-name", NM_CONNECTION, "ifname", "*", "vpn-type", "openconnect",
+                "vpn.data", data]
+    return ["nmcli", "connection", "modify", NM_CONNECTION, "connection.permissions", "", "vpn.data", data]
+
+
 def ensure_nm_profile(portal, hip, hip_script=None):
-    """Create or update the user-owned GlobalProtect NM profile. Idempotent."""
+    """Create or update the GlobalProtect NM profile. Idempotent."""
     if hip and hip_script is None:
         hip_script = hip_script_path()
     data = build_vpn_data(portal, hip, hip_script)
-    user = current_user()
     try:
-        if nm_connection_state() is None:
-            r = run(["nmcli", "connection", "add", "type", "vpn", "con-name", NM_CONNECTION, "ifname", "*", "vpn-type", "openconnect",
-                     "connection.permissions", f"user:{user}", "vpn.data", data], timeout=20)
-        else:
-            r = run(["nmcli", "connection", "modify", NM_CONNECTION, "connection.permissions", f"user:{user}", "vpn.data", data], timeout=20)
+        r = run(nm_profile_command(nm_connection_state() is not None, data), timeout=20)
     except (OSError, subprocess.TimeoutExpired) as e:
         raise AuthError(f"NetworkManager profile setup failed: {e}")
     if r.returncode != 0:
@@ -677,16 +721,16 @@ def resolve_portal(args):
     return portal
 
 
-def sign_in(portal, client_os):
+def sign_in(portal, client_os, auth_interface="auto"):
     emit("signing-in")
-    pre = prelogin(portal, CLIENT_OS.get(client_os, "Windows"))
+    iface, pre = pick_prelogin(portal, CLIENT_OS.get(client_os, "Windows"), auth_interface)
     result = run_sso_window(portal, pre["method"], pre["request"])
     kind, cookie = choose_cookie(result)
     username = result["saml-username"]
     if result.get("portal-userauthcookie"):
         keyring_store(portal, result["portal-userauthcookie"])
-    save_state(username=username, portal=portal)
-    return kind, cookie, username
+    save_state(username=username, portal=portal, authInterface=iface)
+    return kind, cookie, username, iface
 
 
 def _install_term_handler():
@@ -720,14 +764,14 @@ def cmd_connect(args):
             if cookie:
                 emit("authenticating")
                 try:
-                    auth = authenticate(portal, "portal-userauthcookie", cookie, username, args.client_os, args.gateway, hip_script)
+                    auth = authenticate(portal, "portal-userauthcookie", cookie, username, args.client_os, args.gateway, hip_script, interface="portal")
                 except AuthError:
                     keyring_clear(portal)
                     auth = None
         if auth is None:
-            kind, cookie, username = sign_in(portal, args.client_os)
+            kind, cookie, username, iface = sign_in(portal, args.client_os, args.auth_interface)
             emit("authenticating")
-            auth = authenticate(portal, kind, cookie, username, args.client_os, args.gateway, hip_script)
+            auth = authenticate(portal, kind, cookie, username, args.client_os, args.gateway, hip_script, interface=iface)
         save_state(gateway=urllib.parse.urlsplit(auth["CONNECT_URL"]).hostname or "", portal=portal)
         emit("activating")
         nm_up(auth)
@@ -747,7 +791,7 @@ def cmd_login(args):
     if not portal:
         fail("No portal configured")
     try:
-        sign_in(portal, args.client_os)
+        sign_in(portal, args.client_os, args.auth_interface)
         clear_runfile()
         print("phase=signed-in", flush=True)
     except Cancelled as e:
@@ -796,6 +840,8 @@ def main(argv=None):
         sp.add_argument("--client-os", dest="client_os", default="win", choices=list(CLIENT_OS), help="OS to report to the portal")
         sp.add_argument("--hip", action="store_true", help="submit openconnect's HIP report")
         sp.add_argument("--fresh", action="store_true", help="ignore any stored session and sign in again")
+        sp.add_argument("--auth-interface", dest="auth_interface", default="auto", choices=list(AUTH_INTERFACES),
+                        help="where to do the SAML sign-in: gateway, portal, or auto (probe gateway first)")
 
     for name, fn, help_text in (
         ("status", cmd_status, "print the current state as JSON"),

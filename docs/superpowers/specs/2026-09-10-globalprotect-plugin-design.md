@@ -32,6 +32,9 @@ setting is enough), Windows/macOS.
 | 13 | Settings are written by the panel through the shell's `updateEntryInline` API (like the screensaver plugin); the CLI has no `set-portal` command. Notifications are sent by `Service.qml`, not the CLI, so drops initiated by NetworkManager are announced too. | One owner per concern; the CLI stays a pure protocol tool. |
 | 14 | Execution: inline in-session with one forked helper for the Python CLI (Tasks 1–5) while the QML side was written in parallel; the helper's diff was reviewed by hand instead of by separate reviewer agents. | Brian was away and gave blanket approval; parallel work shortened the wall clock. |
 | 15 | The sign-in window is not embedded in the shell. The Quickshell spike crashed on `QtWebEngine` (`base::CommandLine cannot be properly initialized`), confirming decision 1. | Verified on this machine, Quickshell 0.3.1 + qt6-webengine 6.11.2. |
+| 16 | **SAML happens at the gateway interface by default** (`authInterface: auto` probes `/ssl-vpn/prelogin.esp` first, then the portal), and openconnect runs with `--usergroup=gateway:prelogin-cookie`. | Verified against Brian's portal: portal login succeeded but the gateway demanded a second SAML cookie and the portal returned no reusable auth cookie (the deployment gp-saml-gui's `--gateway` flag exists for). |
+| 17 | The NM profile is a **system connection** with no `connection.permissions`. | nm-openconnect refuses private connections ("The 'openconnect' plugin doesn't support private connections"); the wheel + local polkit rule makes system connections prompt-free anyway. |
+| 18 | The tunnel interface is found by the VPN address (`ip -j addr`), not nmcli's `GENERAL.IP-IFACE`, which names the base device for VPNs. | Verified live: nmcli reported `enp7s0`; the tunnel is `vpn0`. |
 
 ## Architecture
 
@@ -162,7 +165,7 @@ Keyboard: `j/k` or arrows move the cursor over actionable rows; `Enter`/`Space` 
 - The gateway certificate fingerprint from `--authenticate` is pinned into the NM activation (`--servercert`).
 - Prelogin uses TLS verification. WebKit uses default TLS policy (errors are shown, not bypassed).
 - WebKit website data lives in `~/.local/share/omarchy-globalprotect/webkit` (0700). *Forget session* wipes it and the keyring entries.
-- Only the user's NM profile is touched (`connection.permissions user:<user>`); nothing is installed outside the plugin dir except the optional pacman install through pkexec.
+- One system NM profile (`GlobalProtect`) is created; nothing is installed outside the plugin dir except the optional pacman install through pkexec.
 
 ## Testing
 
@@ -178,6 +181,6 @@ Keyboard: `j/k` or arrows move the cursor over actionable rows; `Enter`/`Space` 
 
 ## Open items to verify against the real portal
 
-- Whether the portal returns `portal-userauthcookie` (enables silent reconnect) or only `prelogin-cookie`.
-- Whether HIP is enforced (turn on the HIP setting if the gateway rejects the session).
+- ~~Whether the portal returns `portal-userauthcookie`~~ Verified: it does not; sign-in happens at the gateway and relies on Google's persisted session for silent reconnects.
+- HIP: the portal advertises a 60-minute HIP interval; Brian runs with the HIP setting on and the tunnel came up.
 - Whether the portal accepts `clientos=Linux`; if so flip `clientOs` to `linux` for honesty.

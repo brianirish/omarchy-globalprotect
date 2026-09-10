@@ -23,6 +23,7 @@ Item {
   readonly property string gateway: String(setting("gateway", "")).trim()
   readonly property string clientOs: ["win", "linux", "mac"].indexOf(String(setting("clientOs", "win"))) >= 0 ? String(setting("clientOs", "win")) : "win"
   readonly property bool hipReport: setting("hipReport", false) === true
+  readonly property string authInterface: ["auto", "portal", "gateway"].indexOf(String(setting("authInterface", "auto"))) >= 0 ? String(setting("authInterface", "auto")) : "auto"
   readonly property int refreshIntervalSec: Math.min(120, Math.max(2, parseInt(String(setting("refreshIntervalSec", 5)), 10) || 5))
 
   // unconfigured | missing-deps | disconnected | authenticating | activating | connected | error
@@ -56,11 +57,14 @@ Item {
   readonly property bool transitioning: state === "authenticating" || state === "activating" || connectProc.running || disconnectProc.running
   readonly property bool active: _desired === -1 ? (connected || state === "authenticating" || state === "activating") : _desired === 1
   readonly property bool busy: transitioning || forgetProc.running
-  readonly property bool configured: portal !== ""
+  // The CLI remembers the last portal itself, so a widget whose settings have not
+  // been injected yet (plugin hot-reload) still knows it is configured.
+  property string reportedPortal: ""
+  readonly property bool configured: portal !== "" || reportedPortal !== ""
   readonly property bool depsOk: deps.openconnect === true && deps.nmOpenconnect === true && deps.webkit === true
 
   function cliArgs(cmd, extra) {
-    var args = [cliPath, cmd, "--portal", portal, "--gateway", gateway, "--client-os", clientOs]
+    var args = [cliPath, cmd, "--portal", portal, "--gateway", gateway, "--client-os", clientOs, "--auth-interface", authInterface]
     if (hipReport) args.push("--hip")
     return args.concat(extra || [])
   }
@@ -80,6 +84,7 @@ Item {
     // a stale "disconnected" from a poll that raced the run file would flicker.
     if (!(connectProc.running && s.state === "disconnected")) state = s.state
     detail = s.detail
+    reportedPortal = s.portal
     gatewayHost = s.gateway
     iface = s.iface
     ip4 = s.ip4

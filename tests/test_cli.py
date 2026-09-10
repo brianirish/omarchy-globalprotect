@@ -175,12 +175,14 @@ class StatusJsonTests(unittest.TestCase):
             self.assertIn(key, s)
 
     def test_connected_reads_details(self):
-        details = "GENERAL.STATE:activated\nGENERAL.IP-IFACE:vpn0\nIP4.ADDRESS[1]:10.1.2.3/32\nconnection.timestamp:1757490000\n"
+        # nmcli reports the *base* device as IP-IFACE for VPN connections; the tunnel device is the one holding the VPN address.
+        details = "GENERAL.STATE:activated\nGENERAL.IP-IFACE:enp7s0\nIP4.ADDRESS[1]:10.1.2.3/32\nconnection.timestamp:1757490000\n"
         with tempfile.TemporaryDirectory() as d, unittest.mock.patch.dict(os.environ, {"XDG_STATE_HOME": d, "XDG_RUNTIME_DIR": d}):
             gp.save_state(gateway="gw.example.com", username="b@x.com")
             with unittest.mock.patch.object(gp, "check_deps", return_value={"openconnect": True, "nmOpenconnect": True, "webkit": True}), \
                  unittest.mock.patch.object(gp, "nm_connection_state", return_value="activated"), \
                  unittest.mock.patch.object(gp, "nm_connection_details", return_value=gp.parse_nmcli_terse(details)), \
+                 unittest.mock.patch.object(gp, "find_iface_for_ip", return_value="vpn0"), \
                  unittest.mock.patch.object(gp, "iface_stats", return_value=(1234, 99)), \
                  unittest.mock.patch.object(gp, "keyring_has", return_value=True):
                 s = gp.status_json("vpn.example.com")
@@ -234,3 +236,58 @@ class LastMeaningfulLineTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class AuthInterfaceTests(unittest.TestCase):
+    def test_prelogin_urls(self):
+        self.assertEqual(gp.prelogin_url("vpn.example.com", "portal"), "https://vpn.example.com/global-protect/prelogin.esp")
+        self.assertEqual(gp.prelogin_url("vpn.example.com", "gateway"), "https://vpn.example.com/ssl-vpn/prelogin.esp")
+
+    def test_gateway_interface_command(self):
+        cmd = gp.authenticate_command("vpn.example.com", "prelogin-cookie", "b@x.com", "win", "GW-EU", None, interface="gateway")
+        self.assertIn("--usergroup=gateway:prelogin-cookie", cmd)
+        self.assertNotIn("--authgroup=GW-EU", cmd)  # gateway selection is a portal concept
+
+    def test_portal_interface_is_default(self):
+        self.assertIn("--usergroup=portal:prelogin-cookie", gp.authenticate_command("p", "prelogin-cookie", "u", "win", "", None))
+
+    def test_interface_order(self):
+        self.assertEqual(gp.interfaces_to_try("auto"), ["gateway", "portal"])
+        self.assertEqual(gp.interfaces_to_try("portal"), ["portal"])
+        self.assertEqual(gp.interfaces_to_try("gateway"), ["gateway"])
+        self.assertEqual(gp.interfaces_to_try("nonsense"), ["gateway", "portal"])
+
+    def test_pick_prelogin_falls_back_to_portal(self):
+        calls = []
+        def fake_prelogin(portal, client_os, timeout=20, interface="portal"):
+            calls.append(interface)
+            if interface == "gateway":
+                raise gp.PreloginError("no saml here")
+            return {"method": "REDIRECT", "request": "https://idp/sso"}
+        with unittest.mock.patch.object(gp, "prelogin", fake_prelogin):
+            iface, pre = gp.pick_prelogin("p", "Windows", "auto")
+        self.assertEqual((iface, pre["method"], calls), ("portal", "REDIRECT", ["gateway", "portal"]))
+
+    def test_pick_prelogin_raises_last_error_when_all_fail(self):
+        def fake_prelogin(portal, client_os, timeout=20, interface="portal"):
+            raise gp.PreloginError(f"{interface} failed")
+        with unittest.mock.patch.object(gp, "prelogin", fake_prelogin):
+            with self.assertRaises(gp.PreloginError) as cm:
+                gp.pick_prelogin("p", "Windows", "auto")
+        self.assertIn("portal failed", str(cm.exception))
+
+
+class NmProfileCommandTests(unittest.TestCase):
+    # nm-openconnect refuses "private" (user-permission-scoped) connections, so the
+    # profile must stay a system connection.
+    def test_add_command_has_no_user_permissions(self):
+        cmd = gp.nm_profile_command(False, "gateway=p,protocol=gp")
+        self.assertEqual(cmd[:4], ["nmcli", "connection", "add", "type"])
+        self.assertNotIn("connection.permissions", cmd)
+        self.assertEqual(cmd[-2:], ["vpn.data", "gateway=p,protocol=gp"])
+
+    def test_modify_command_clears_permissions(self):
+        cmd = gp.nm_profile_command(True, "gateway=p,protocol=gp")
+        self.assertEqual(cmd[:4], ["nmcli", "connection", "modify", "GlobalProtect"])
+        i = cmd.index("connection.permissions")
+        self.assertEqual(cmd[i + 1], "")

@@ -9,4 +9,5 @@ Initial release.
 - Reusable portal session cookie stored in the GNOME keyring when the portal provides one.
 - NetworkManager owns the tunnel via `networkmanager-openconnect`; secrets passed through a 0600 password file.
 - Optional HIP report and gateway selection; reported client OS setting.
+- SAML sign-in at the gateway interface by default (`authInterface: auto`), for deployments whose gateway demands its own SSO; portal mode remains available.
 - Keyboard navigation, desktop notifications, one-click dependency install.

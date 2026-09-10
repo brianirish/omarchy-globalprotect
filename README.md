@@ -46,8 +46,13 @@ the package above), NetworkManager, Python with PyGObject, GTK 3, WebKitGTK,
 
 If the portal refuses the connection, check the panel's settings section:
 
+- **Sign-in interface** (`authInterface` in `shell.json`, default `auto`): some
+  deployments require the SAML sign-in at the *gateway* (`/ssl-vpn/prelogin.esp`)
+  rather than the portal, and hand out no reusable portal cookie. `auto` probes
+  the gateway interface on your host first and falls back to the portal; force
+  `gateway` or `portal` if you know which one you need.
 - **Gateway**: leave empty to accept the portal's default gateway, or type the
-  gateway name your IT shows in the official client.
+  gateway name your IT shows in the official client (portal sign-in only).
 - **HIP report**: turn on if your portal requires a host-integrity report. This
   submits openconnect's stock `hipreport.sh`.
 - **Reported client OS** (`clientOs` in `shell.json`, default `win`): many portals
@@ -64,15 +69,17 @@ o.window({ class = "^omarchy-globalprotect$" }, { float = true, center = true, s
 ```
 Panel.qml ── Service.qml ──► bin/omarchy-globalprotect ──► nmcli / NetworkManager ──► nm-openconnect ──► openconnect
                                      │
-                                     ├─► POST https://<portal>/global-protect/prelogin.esp  → SAML request
+                                     ├─► POST https://<host>/ssl-vpn/prelogin.esp (gateway) or /global-protect/prelogin.esp (portal) → SAML request
                                      ├─► GTK + WebKitGTK window: Google SSO → prelogin-cookie / portal-userauthcookie
-                                     ├─► openconnect --protocol=gp --authenticate  (unprivileged; prints COOKIE, CONNECT_URL, FINGERPRINT)
+                                     ├─► openconnect --protocol=gp --authenticate --usergroup=<gateway|portal>:prelogin-cookie  (unprivileged; prints COOKIE, CONNECT_URL, FINGERPRINT)
                                      └─► nmcli connection up GlobalProtect passwd-file=<0600 file in $XDG_RUNTIME_DIR>
 ```
 
 Secrets only ever travel over stdin or that temporary file, never on a command
 line, and the gateway's certificate fingerprint is pinned into the activation.
-The NM profile `GlobalProtect` is owned by your user. The CLI is usable on its own:
+The NM profile `GlobalProtect` is a system connection (the openconnect plugin
+refuses user-private ones); Omarchy's wheel polkit rule lets you manage it
+without a prompt. The CLI is usable on its own:
 
 ```bash
 bin/omarchy-globalprotect status --json
@@ -98,6 +105,9 @@ Where things live:
   with the reported client OS. Try `clientOs: "linux"` or `"mac"` in `shell.json`.
 - **Signed in, but the tunnel fails with a HIP or "host check" message** — turn on
   *HIP report* in the panel.
+- **Signed in, then "User input required in non-interactive mode"** — the gateway
+  wants its own SAML sign-in. `auto` handles this; if you forced `portal`, switch
+  `authInterface` to `gateway`.
 - **The tunnel never comes up** — `journalctl -u NetworkManager -n 50` shows what
   openconnect said; `bin/omarchy-globalprotect connect --portal <host>` in a
   terminal prints each phase.
