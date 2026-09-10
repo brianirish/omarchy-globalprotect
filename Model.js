@@ -82,6 +82,37 @@ function dnsText(dns, domains) {
   return parts.length > 0 ? parts.join(" · ") : "—"
 }
 
+// Host state (the official client's Host Profile tab): what hipreport.sh claims.
+function normalizeHostState(raw) {
+  var d = raw && typeof raw === "object" ? raw : {}
+  var r = d.report && typeof d.report === "object" ? d.report : null
+  return {
+    enabled: d.enabled === true,
+    error: String(d.error || ""),
+    os: r ? String(r.os || "") : "",
+    clientVersion: r ? String(r.clientVersion || "") : "",
+    hostName: r ? String(r.hostName || "") : "",
+    hostId: r ? String(r.hostId || "") : "",
+    products: r && Array.isArray(r.products) ? r.products.map(String) : []
+  }
+}
+
+function reportsAsText(h) {
+  if (!h || h.os === "") return "—"
+  return h.clientVersion !== "" ? h.os + " · client " + h.clientVersion : h.os
+}
+
+function hostText(h) {
+  if (!h || (h.hostName === "" && h.hostId === "")) return "—"
+  if (h.hostId === "") return h.hostName
+  return h.hostName + " · " + h.hostId
+}
+
+function claimsText(h) {
+  if (!h) return "—"
+  return h.products.length > 0 ? h.products.join(", ") : "Host info only"
+}
+
 function formatBytesPerSec(n) {
   n = Math.max(0, Number(n) || 0)
   if (n < 1024) return Math.round(n) + " B/s"

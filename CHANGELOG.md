@@ -10,6 +10,9 @@
 - Connection details in the panel and in `status --json`: tunnel protocol (ESP over
   UDP or SSL, detected from the socket to the gateway), gateway IP, pushed routes
   (full or split), DNS servers and search domains.
+- *Host state* section in the panel and a `hip-report` CLI command: what the HIP
+  report claims about this machine (OS and client version, host name and ID, and any
+  security products the stock script lists).
 
 ## 0.1.0 — 2026-09-10
 

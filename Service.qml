@@ -50,6 +50,7 @@ Item {
   property var deps: ({ openconnect: false, nmOpenconnect: false, webkit: false })
   property string actionStatus: ""
   property string lastError: ""
+  property var hostState: Model.normalizeHostState(null)
   property bool everPolled: false
 
   // Optimistic intent: -1 follow reality, 0 turning off, 1 turning on.
@@ -194,6 +195,17 @@ Item {
     disconnectProc.running = true
   }
 
+  // What the HIP report would say right now; cheap, so refresh whenever it could have changed.
+  function loadHostState() {
+    if (cliPath === "" || hostStateProc.running) return
+    hostStateProc.command = cliArgs("hip-report")
+    hostStateProc.running = true
+  }
+
+  onPanelOpenChanged: if (panelOpen) loadHostState()
+  onHipReportChanged: if (panelOpen) loadHostState()
+  onClientOsChanged: if (panelOpen) loadHostState()
+
   function forget() {
     if (forgetProc.running) return
     forgetProc.command = cliArgs("forget")
@@ -319,6 +331,16 @@ Item {
         root.notify("Disconnected", "The GlobalProtect tunnel is closed", "network-vpn-disconnected")
       }
       delayedRefresh.restart()
+    }
+  }
+
+  Process {
+    id: hostStateProc
+    stdout: StdioCollector { id: hostStateOut; waitForEnd: true }
+    onExited: function(code) {
+      var parsed = null
+      try { parsed = JSON.parse(hostStateOut.text) } catch (e) {}
+      if (code === 0 && parsed) root.hostState = Model.normalizeHostState(parsed)
     }
   }
 

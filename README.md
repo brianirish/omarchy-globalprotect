@@ -57,7 +57,10 @@ If the portal refuses the connection, check the panel's settings section:
 - **Gateway**: leave empty to accept the portal's default gateway, or type the
   gateway name your IT shows in the official client (portal sign-in only).
 - **HIP report**: turn on if your portal requires a host-integrity report. This
-  submits openconnect's stock `hipreport.sh`.
+  submits openconnect's stock `hipreport.sh`. The panel's *Host state* section
+  shows exactly what that script claims (reporting as Windows lists stock McAfee,
+  Defender, and Windows tooling entries; as Linux it lists cryptsetup, iptables,
+  nftables, and DNF).
 - **Reported client OS** (`clientOs` in `shell.json`, default `win`): many portals
   only allow Windows and macOS clients. Set it to `linux` if yours accepts Linux.
 
@@ -90,6 +93,7 @@ bin/omarchy-globalprotect connect --portal vpn.example.com
 bin/omarchy-globalprotect disconnect
 bin/omarchy-globalprotect login       # sign in only, store the session
 bin/omarchy-globalprotect forget      # drop the keyring entry and the WebKit data
+bin/omarchy-globalprotect hip-report --client-os win   # what the HIP report claims (JSON)
 ```
 
 Where things live:

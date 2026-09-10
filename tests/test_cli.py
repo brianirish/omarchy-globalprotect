@@ -279,6 +279,69 @@ class ConnectionDetailTests(unittest.TestCase):
         self.assertFalse(gp.is_full_tunnel([]))
 
 
+class HipReportTests(unittest.TestCase):
+    XML = (
+        '<?xml version="1.0" encoding="UTF-8"?>\n'
+        '<hip-report name="hip-report">\n'
+        '  <md5-sum>0</md5-sum><user-name>b@x.com</user-name><domain></domain>\n'
+        '  <host-name>dz-linux</host-name><host-id>deadbeef-dead-beef-dead-beefdeadbeef</host-id>\n'
+        '  <ip-address>10.1.2.3</ip-address><ipv6-address></ipv6-address>\n'
+        '  <generate-time>09/10/2026 12:00:00</generate-time><hip-report-version>4</hip-report-version>\n'
+        '  <categories>\n'
+        '    <entry name="host-info">\n'
+        '      <client-version>5.1.5-8</client-version><os>Microsoft Windows 10 Pro , 64-bit</os>\n'
+        '      <os-vendor>Microsoft</os-vendor><domain>.internal</domain>\n'
+        '      <host-name>dz-linux</host-name><host-id>deadbeef-dead-beef-dead-beefdeadbeef</host-id>\n'
+        '    </entry>\n'
+        '    <entry name="anti-malware"><list/></entry>\n'
+        '    <entry name="disk-encryption"><list/></entry>\n'
+        '  </categories>\n'
+        '</hip-report>\n'
+    )
+
+    def test_parse_extracts_host_info(self):
+        r = gp.parse_hip_report(self.XML)
+        self.assertEqual(r["os"], "Microsoft Windows 10 Pro , 64-bit")
+        self.assertEqual(r["osVendor"], "Microsoft")
+        self.assertEqual(r["clientVersion"], "5.1.5-8")
+        self.assertEqual(r["hostName"], "dz-linux")
+        self.assertEqual(r["hostId"], "deadbeef-dead-beef-dead-beefdeadbeef")
+        self.assertEqual(r["ipAddress"], "10.1.2.3")
+        self.assertEqual(r["categories"], ["host-info", "anti-malware", "disk-encryption"])
+        self.assertEqual(r["products"], [])
+
+    def test_parse_lists_claimed_products(self):
+        xml = self.XML.replace(
+            '<entry name="anti-malware"><list/></entry>',
+            '<entry name="antivirus"><list><entry><ProductInfo><Prod name="McAfee VirusScan Enterprise" version="8.8"/></ProductInfo></entry>'
+            '<entry><ProductInfo><Prod name="Windows Defender" version="4.11"/></ProductInfo></entry></list></entry>'
+            '<entry name="anti-spyware"><list><entry><ProductInfo><Prod name="Windows Defender" version="4.11"/></ProductInfo></entry></list></entry>')
+        self.assertEqual(gp.parse_hip_report(xml)["products"], ["McAfee VirusScan Enterprise", "Windows Defender"])
+
+    def test_parse_missing_host_info_gives_empty_strings(self):
+        r = gp.parse_hip_report('<hip-report><categories/></hip-report>')
+        self.assertEqual((r["os"], r["clientVersion"], r["categories"]), ("", "", []))
+
+    def test_parse_bad_xml_raises(self):
+        with self.assertRaises(gp.HipError):
+            gp.parse_hip_report("<nope")
+
+    def test_command_passes_identity_and_os(self):
+        cmd = gp.hip_report_command("/usr/lib/openconnect/hipreport.sh", "b@x.com", "dz-linux", "10.1.2.3", "win")
+        self.assertEqual(cmd[0], "/usr/lib/openconnect/hipreport.sh")
+        cookie = cmd[cmd.index("--cookie") + 1]
+        self.assertIn("user=b@x.com", cookie)
+        self.assertIn("computer=dz-linux", cookie)
+        self.assertEqual(cmd[cmd.index("--client-ip") + 1], "10.1.2.3")
+        self.assertEqual(cmd[cmd.index("--client-os") + 1], "Windows")
+        self.assertEqual(len(cmd[cmd.index("--md5") + 1]), 32)
+
+    def test_command_uses_placeholder_ip_when_disconnected(self):
+        cmd = gp.hip_report_command("/s", "u", "h", "", "linux")
+        self.assertEqual(cmd[cmd.index("--client-ip") + 1], "0.0.0.0")
+        self.assertEqual(cmd[cmd.index("--client-os") + 1], "Linux")
+
+
 class ThemeColorTests(unittest.TestCase):
     def test_parses_minimal_toml(self):
         c = gp.parse_theme_colors('mode = "dark"\naccent = "#7d82d9"\nbackground = "#060B1E"\nforeground = "#ffcead"\n')

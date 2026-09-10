@@ -47,6 +47,10 @@ class Cancelled(Exception):
     pass
 
 
+class HipError(Exception):
+    pass
+
+
 # --------------------------------------------------------------------------- pure helpers
 
 def parse_prelogin(xml_text):
@@ -195,6 +199,47 @@ def nm_routes(details):
 
 def is_full_tunnel(routes):
     return any(r in ("0.0.0.0/0", "::/0") for r in routes)
+
+
+def parse_hip_report(xml_text):
+    """Flatten a HIP report (what hipreport.sh prints) into the fields worth showing."""
+    try:
+        root = ET.fromstring(xml_text)
+    except ET.ParseError as e:
+        raise HipError(f"HIP report is not valid XML ({e})")
+    host = None
+    categories, products = [], []
+    for entry in root.findall("./categories/entry"):
+        name = (entry.get("name") or "").strip()
+        if name:
+            categories.append(name)
+        if name == "host-info":
+            host = entry
+        for prod in entry.iter("Prod"):
+            n = (prod.get("name") or "").strip()
+            if n and n not in products:
+                products.append(n)
+
+    def text(el, tag):
+        return (el.findtext(tag) or "").strip() if el is not None else ""
+
+    return {
+        "os": text(host, "os"),
+        "osVendor": text(host, "os-vendor"),
+        "clientVersion": text(host, "client-version"),
+        "hostName": text(root, "host-name") or text(host, "host-name"),
+        "hostId": text(root, "host-id") or text(host, "host-id"),
+        "ipAddress": text(root, "ip-address"),
+        "categories": categories,
+        "products": products,
+    }
+
+
+def hip_report_command(script, username, hostname, ip, client_os):
+    """Run hipreport.sh the way openconnect does, with placeholders for the session-bound bits."""
+    cookie = f"user={username}&domain=&computer={hostname}"
+    return [script, "--cookie", cookie, "--client-ip", ip or "0.0.0.0", "--md5", "0" * 32,
+            "--client-os", CLIENT_OS.get(client_os, "Windows")]
 
 
 def derive_state(conn_state, runfile, portal, deps):
@@ -925,6 +970,30 @@ def cmd_deps(args):
     print(json.dumps(check_deps()))
 
 
+def hip_report_preview(client_os, username, ip):
+    script = hip_script_path()
+    if not script:
+        raise HipError("openconnect's hipreport.sh is not installed")
+    try:
+        r = run(hip_report_command(script, username, socket.gethostname(), ip, client_os), timeout=15)
+    except (OSError, subprocess.TimeoutExpired) as e:
+        raise HipError(f"HIP report script failed: {e}")
+    if r.returncode != 0:
+        raise HipError(last_meaningful_line(r.stderr) or "HIP report script failed")
+    return parse_hip_report(r.stdout)
+
+
+def cmd_hip_report(args):
+    """What the HIP report says about this machine (the official client's Host Profile tab)."""
+    state = load_state()
+    out = {"enabled": bool(args.hip), "script": hip_script_path() or "", "clientOs": args.client_os, "report": None, "error": ""}
+    try:
+        out["report"] = hip_report_preview(args.client_os, state.get("username", ""), "")
+    except HipError as e:
+        out["error"] = str(e)
+    print(json.dumps(out))
+
+
 def main(argv=None):
     p = argparse.ArgumentParser(prog=APP, description=__doc__.splitlines()[0])
     sub = p.add_subparsers(dest="cmd", required=True)
@@ -945,6 +1014,7 @@ def main(argv=None):
         ("login", cmd_login, "run only the sign-in window and store the session"),
         ("forget", cmd_forget, "drop the stored session and the sign-in window's saved logins"),
         ("deps", cmd_deps, "report which dependencies are installed"),
+        ("hip-report", cmd_hip_report, "show what the HIP report says about this machine"),
     ):
         sp = sub.add_parser(name, help=help_text)
         common(sp)

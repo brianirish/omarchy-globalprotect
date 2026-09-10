@@ -626,6 +626,46 @@ Panel {
           }
 
           // ---------- Settings ----------
+          // ---------- Host state ----------
+          PanelSeparator { visible: hostStateSection.visible; foreground: gpPanel.foreground }
+
+          Section {
+            id: hostStateSection
+            shown: gp.configured && gp.everPolled && gp.depsOk
+
+            PanelSectionHeader { text: "HOST STATE"; foreground: gpPanel.foreground; fontFamily: gpPanel.fontFamily }
+
+            InfoRow {
+              label: "Reports as"
+              value: Model.reportsAsText(gp.hostState)
+            }
+
+            InfoRow {
+              label: "Host"
+              value: Model.hostText(gp.hostState)
+            }
+
+            InfoRow {
+              label: "Claims"
+              value: Model.claimsText(gp.hostState)
+            }
+
+            Text {
+              textFormat: Text.PlainText
+              width: parent.width
+              text: gp.hostState.error !== ""
+                ? gp.hostState.error
+                : (gp.hipReport
+                    ? "This is what openconnect's hipreport.sh submits when the tunnel comes up and on the portal's check interval."
+                    : "HIP report is off: nothing is sent to the portal. Turn it on below if your portal requires a host check.")
+              color: gp.hostState.error !== "" ? gpPanel.urgent : gpPanel.foreground
+              opacity: gp.hostState.error !== "" ? 0.9 : 0.55
+              font.family: gpPanel.fontFamily
+              font.pixelSize: Style.font.caption
+              wrapMode: Text.WordWrap
+            }
+          }
+
           PanelSeparator { visible: settingsSection.visible; foreground: gpPanel.foreground }
 
           Section {
