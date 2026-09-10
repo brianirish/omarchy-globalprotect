@@ -1,5 +1,13 @@
 # Changelog
 
+## Unreleased
+
+- The NetworkManager profile is persistent (`vpn.persistent yes`): link changes and
+  resume from suspend no longer tear the tunnel down; openconnect reconnects with the
+  same session.
+- *Rediscover network* (`n` key, panel button, `rediscover` IPC): drop the tunnel and
+  reconnect through the stored session.
+
 ## 0.1.0 — 2026-09-10
 
 Initial release.

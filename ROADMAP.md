@@ -89,8 +89,8 @@ sparkline, keyboard navigation, no root daemon, and NetworkManager ownership
 
 The tunnel survives the network, and you can see what it negotiated.
 
-- [ ] Stay up across link changes (`vpn.persistent`)
-- [ ] Rediscover network (disconnect + reconnect with the stored session)
+- [x] Stay up across link changes (`vpn.persistent`)
+- [x] Rediscover network (disconnect + reconnect with the stored session)
 - [ ] Connection details: tunnel protocol (ESP/SSL), gateway IP, routes, DNS
 - [ ] Host state view: what the HIP report says about this machine
 - [ ] Log bundle and a debug logging setting

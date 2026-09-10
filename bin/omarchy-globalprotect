@@ -651,11 +651,15 @@ def nm_profile_command(exists, data):
     wheel + local-session polkit rule lets us manage system connections
     without a prompt anyway. modify also clears any permissions left over from
     an older profile.
+
+    vpn.persistent keeps NetworkManager from tearing the tunnel down on a link
+    change (Wi-Fi roam, cable swap, resume from suspend); openconnect then
+    reconnects with the same session cookie until it expires.
     """
     if not exists:
         return ["nmcli", "connection", "add", "type", "vpn", "con-name", NM_CONNECTION, "ifname", "*", "vpn-type", "openconnect",
-                "vpn.data", data]
-    return ["nmcli", "connection", "modify", NM_CONNECTION, "connection.permissions", "", "vpn.data", data]
+                "vpn.persistent", "yes", "vpn.data", data]
+    return ["nmcli", "connection", "modify", NM_CONNECTION, "connection.permissions", "", "vpn.persistent", "yes", "vpn.data", data]
 
 
 def ensure_nm_profile(portal, hip, hip_script=None):

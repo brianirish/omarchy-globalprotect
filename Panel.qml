@@ -45,6 +45,7 @@ Panel {
   function rowsForCursor() {
     var rows = ["header"]
     if (gp.connected && gp.ip4 !== "") rows.push("address")
+    if (gp.connected) rows.push("rediscover")
     if (gp.username !== "" || gp.hasSession) rows.push("signin", "forget")
     if (gp.configured && gp.everPolled && !gp.depsOk) rows.push("install")
     return rows
@@ -61,6 +62,7 @@ Panel {
     var row = cursorRow
     if (row === "header") gp.toggle()
     else if (row === "address") gp.copyAddress()
+    else if (row === "rediscover") gp.rediscover()
     else if (row === "signin") gp.signInAgain()
     else if (row === "forget") openForget()
     else if (row === "install") installDeps()
@@ -173,6 +175,7 @@ Panel {
     function disconnect(): string { gp.disconnectVpn(); return "ok" }
     function toggleVpn(): string { gp.toggle(); return "ok" }
     function refresh(): string { gp.refresh(); return "ok" }
+    function rediscover(): string { gp.rediscover(); return "ok" }
     function status(): string { return gp.state }
   }
 
@@ -240,6 +243,7 @@ Panel {
         else if (k === "r") { gp.refresh(); gp.flash("Refreshed") }
         else if (k === "c") gp.copyAddress()
         else if (k === "s") gp.signInAgain()
+        else if (k === "n") gp.rediscover()
         else if (k === "f") gpPanel.openForget()
       }
 
@@ -432,6 +436,21 @@ Panel {
                   }
                 }
               }
+            }
+
+            Button {
+              width: parent.width
+              iconText: ""
+              iconSpinning: gp.transitioning
+              text: "Rediscover network"
+              fontSize: Style.font.bodySmall
+              foreground: gpPanel.foreground
+              fontFamily: gpPanel.fontFamily
+              bordered: true
+              hasCursor: gpPanel.cursorRow === "rediscover"
+              horizontalPadding: Style.spacing.controlPaddingX
+              verticalPadding: Style.spacing.controlPaddingY
+              onClicked: gp.rediscover()
             }
           }
 

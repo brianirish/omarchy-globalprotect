@@ -286,6 +286,18 @@ class NmProfileCommandTests(unittest.TestCase):
         self.assertNotIn("connection.permissions", cmd)
         self.assertEqual(cmd[-2:], ["vpn.data", "gateway=p,protocol=gp"])
 
+    # A link change (Wi-Fi roam, cable swap, suspend) must not make NetworkManager
+    # tear the tunnel down; openconnect reconnects with the same cookie instead.
+    def test_add_command_makes_profile_persistent(self):
+        cmd = gp.nm_profile_command(False, "gateway=p,protocol=gp")
+        i = cmd.index("vpn.persistent")
+        self.assertEqual(cmd[i + 1], "yes")
+
+    def test_modify_command_makes_profile_persistent(self):
+        cmd = gp.nm_profile_command(True, "gateway=p,protocol=gp")
+        i = cmd.index("vpn.persistent")
+        self.assertEqual(cmd[i + 1], "yes")
+
     def test_modify_command_clears_permissions(self):
         cmd = gp.nm_profile_command(True, "gateway=p,protocol=gp")
         self.assertEqual(cmd[:4], ["nmcli", "connection", "modify", "GlobalProtect"])

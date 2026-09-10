@@ -13,9 +13,11 @@ no password prompts once installed.
   usually a window that flashes and closes. When the portal hands back a
   reusable session cookie it is kept in your keyring and reused until it expires.
 - **Keyboard-first** like the stock panels: `j`/`k` move, `Enter` activates,
-  `t` toggles, `c` copies the address, `s` signs in again, `f` forgets the session, `Esc` closes.
+  `t` toggles, `c` copies the address, `n` rediscovers the network, `s` signs in again, `f` forgets the session, `Esc` closes.
 - **NetworkManager owns the tunnel**, so routes, DNS, and teardown behave like any
   other NM VPN, and `nmcli connection down GlobalProtect` works from a terminal too.
+  The profile is persistent: a Wi-Fi roam, cable swap, or resume from suspend makes
+  openconnect reconnect with the same session instead of dropping the tunnel.
 
 ## Install
 

@@ -159,12 +159,27 @@ Item {
     if (connectProc.running) return
     if (connected || state === "activating") {
       _desired = 1
+      reconnectAfterDown.fresh = true
       reconnectAfterDown.start()
       disconnectProc.command = cliArgs("disconnect")
       disconnectProc.running = true
     } else {
       connectVpn(true)
     }
+  }
+
+  // The official client's "rediscover network": drop the tunnel and come back
+  // through the stored session, so routes and the gateway get renegotiated.
+  function rediscover() {
+    if (connectProc.running || disconnectProc.running) return
+    if (!connected && state !== "activating") { connectVpn(false); return }
+    _desired = 1
+    lastError = ""
+    flash("Rediscovering network…")
+    reconnectAfterDown.fresh = false
+    reconnectAfterDown.start()
+    disconnectProc.command = cliArgs("disconnect")
+    disconnectProc.running = true
   }
 
   function forget() {
@@ -209,7 +224,9 @@ Item {
   Timer { id: monitorDebounce; interval: 400; repeat: false; onTriggered: root.refresh() }
   Timer { id: delayedRefresh; interval: 600; repeat: false; onTriggered: root.refresh() }
   Timer { id: actionStatusTimer; interval: 2200; repeat: false; onTriggered: root.actionStatus = "" }
-  Timer { id: reconnectAfterDown; interval: 800; repeat: false; onTriggered: root.connectVpn(true) }
+  // Comes back after a deliberate disconnect: fresh=true forces the sign-in
+  // window (sign in again), fresh=false reuses the stored session (rediscover).
+  Timer { id: reconnectAfterDown; interval: 800; repeat: false; property bool fresh: true; onTriggered: root.connectVpn(fresh) }
   Timer { id: monitorRestart; interval: 3000; repeat: false; onTriggered: monitorProc.running = true }
 
   // A poll that never returns would otherwise block every later refresh.
