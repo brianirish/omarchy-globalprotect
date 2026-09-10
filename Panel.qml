@@ -272,7 +272,6 @@ Panel {
               width: parent.width
               title: "GlobalProtect"
               meta: gpPanel.heroMeta
-              detail: gp.connected && gp.gatewayHost !== "" ? gp.gatewayHost : ""
               foreground: gpPanel.foreground
               fontFamily: gpPanel.fontFamily
               iconOpacity: 1.0
