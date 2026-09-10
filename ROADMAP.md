@@ -119,7 +119,7 @@ Pick where you land.
 - [x] Default system browser for SAML (`globalprotectcallback` handler)
 - [x] Proxy support
 
-### v0.6 — Network
+### v0.6.0 — Network (shipped 2026-09-10)
 
 - [x] Split DNS through systemd-resolved
 - [x] No direct access to local network

@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.6.0 — 2026-09-10
 
 - Tunnel DNS (`dnsMode`): the gateway's DNS servers and search domains are applied to
   the tunnel link in systemd-resolved after activation, which Omarchy's global DNS pin
