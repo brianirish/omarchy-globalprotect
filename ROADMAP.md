@@ -7,7 +7,10 @@ features and the hard networking tier are listed at the end.
 
 Status legend: `[x]` shipped · `[ ]` planned · `~` partial
 
-## Where v0.1 stands
+## Where the widget stands
+
+Everything in the Easy and Medium tiers below shipped between v0.2 and v1.0; the
+tables are kept as the original comparison.
 
 ### Already covered
 
@@ -138,10 +141,10 @@ Pick where you land.
 
 Everything above stable, and the widget stands on its own.
 
-- [ ] Every setting editable in the panel (no `shell.json` hand edits)
-- [ ] First-run flow polished end to end
-- [ ] Test coverage for every CLI code path that talks to the portal
-- [ ] README and troubleshooting rewritten for the full feature set
+- [x] Every setting editable in the panel (no `shell.json` hand edits)
+- [x] First-run flow polished end to end
+- [x] Test coverage for every CLI code path that talks to the portal
+- [x] README and troubleshooting rewritten for the full feature set
 
 ## Beyond 1.0
 

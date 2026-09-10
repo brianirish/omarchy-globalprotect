@@ -1,5 +1,17 @@
 # Changelog
 
+## Unreleased
+
+- Every setting is now editable in the panel: *Reports as* (client OS), *Sign-in
+  interface*, *Refresh (s)*, and *Pause (min)* join the rest; no more `shell.json`
+  hand edits.
+- First-run copy explains what happens after the portal is saved.
+- Coverage for the CLI paths that talk to the portal: prelogin and the config fetch
+  (request body, headers, error mapping), the password-file lifecycle around
+  `nmcli connection up`, split-DNS application, and latency probing.
+- README rewritten around the full feature set, with a settings reference and a CLI
+  reference.
+
 ## 0.7.0 — 2026-09-10
 
 - Portal-driven app settings: the gateway refresh also parses `agent-config` (connect

@@ -294,7 +294,7 @@ Panel {
     PanelKeyCatcher {
       id: keyCatcher
       anchors.fill: parent
-      blocked: gpPanel.forgetOpen || portalField.activeFocus || proxyField.activeFocus || certField.activeFocus || keyField.activeFocus || mtuField.activeFocus || addPortalField.activeFocus
+      blocked: gpPanel.forgetOpen || portalField.activeFocus || proxyField.activeFocus || certField.activeFocus || keyField.activeFocus || mtuField.activeFocus || addPortalField.activeFocus || refreshField.activeFocus || pauseField.activeFocus
       onMoveRequested: function(dx, dy) {
         if (!gpPanel.cursorActive) { gpPanel.cursorActive = true; return }
         if (dy !== 0) gpPanel.moveCursor(dy)
@@ -693,7 +693,7 @@ Panel {
             Text {
               textFormat: Text.PlainText
               width: parent.width
-              text: "Enter your company's GlobalProtect portal host. Connecting opens Google sign-in in its own window; NetworkManager then owns the tunnel."
+              text: "Enter your company's GlobalProtect portal host, then flip the switch. Sign-in opens in its own window (Google, or a password prompt if the portal has no SSO); NetworkManager then owns the tunnel."
               color: gpPanel.foreground
               opacity: 0.6
               font.family: gpPanel.fontFamily
@@ -1028,10 +1028,35 @@ Panel {
               onClicked: gp.collectLogs()
             }
 
+            Toggle {
+              width: parent.width
+              label: "Reports as " + (gp.clientOs === "win" ? "Windows" : (gp.clientOs === "mac" ? "macOS" : "Linux"))
+              description: "The client OS sent to the portal; many portals only admit Windows and macOS. Click to cycle Windows → Linux → macOS"
+              checked: gp.clientOs !== "win"
+              foreground: gpPanel.foreground
+              fontFamily: gpPanel.fontFamily
+              onClicked: gpPanel.saveSetting("clientOs", gp.clientOs === "win" ? "linux" : (gp.clientOs === "linux" ? "mac" : "win"))
+            }
+
+            Toggle {
+              width: parent.width
+              label: "Sign-in interface: " + (gp.authInterface === "auto" ? "auto" : gp.authInterface)
+              description: gp.authInterface === "auto"
+                ? "Probe the gateway interface first, then the portal. Click to force gateway or portal"
+                : (gp.authInterface === "gateway" ? "SAML at /ssl-vpn/prelogin.esp on the gateway host" : "SAML at /global-protect/prelogin.esp on the portal")
+              checked: gp.authInterface !== "auto"
+              foreground: gpPanel.foreground
+              fontFamily: gpPanel.fontFamily
+              onClicked: gpPanel.saveSetting("authInterface", gp.authInterface === "auto" ? "gateway" : (gp.authInterface === "gateway" ? "portal" : "auto"))
+            }
+
+            SettingField { id: refreshField; label: "Refresh (s)"; placeholder: "5"; settingKey: "refreshIntervalSec"; current: String(gp.refreshIntervalSec); numeric: true; minimum: 2 }
+            SettingField { id: pauseField; label: "Pause (min)"; placeholder: "30"; settingKey: "pauseMinutes"; current: String(gp.pauseMinutes); numeric: true; minimum: 1 }
+
             Text {
               textFormat: Text.PlainText
               width: parent.width
-              text: "Portal: " + gp.portal + "  ·  reports as " + (gp.clientOs === "win" ? "Windows" : (gp.clientOs === "mac" ? "macOS" : "Linux")) + ". Edit these in shell.json under this widget's entry."
+              text: "Portal: " + gp.portal + (gp.policy.portalName !== "" ? " (" + gp.policy.portalName + ")" : "") + "  ·  everything above is stored under this widget's entry in shell.json."
               color: gpPanel.foreground
               opacity: 0.55
               font.family: gpPanel.fontFamily
@@ -1077,6 +1102,7 @@ Panel {
     property string settingKey: ""
     property string current: ""
     property bool numeric: false
+    property int minimum: 0
     property alias activeFocus: field.activeFocus
     width: parent ? parent.width : implicitWidth
     spacing: Style.space(8)
@@ -1103,7 +1129,7 @@ Panel {
         var v = text.trim()
         if (settingField.numeric) {
           var n = parseInt(v, 10)
-          if (isNaN(n) || n < 0) n = 0
+          if (isNaN(n) || n < settingField.minimum) n = settingField.minimum
           if (String(n) !== settingField.current && !(n === 0 && settingField.current === "")) gpPanel.saveSetting(settingField.settingKey, n)
           return
         }

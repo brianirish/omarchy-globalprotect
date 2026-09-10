@@ -3,9 +3,12 @@ import importlib.machinery
 import importlib.util
 import os
 import pathlib
+import subprocess
 import tempfile
 import unittest
 import unittest.mock
+import urllib.error
+import urllib.parse
 
 CLI = pathlib.Path(__file__).resolve().parents[1] / "bin" / "omarchy-globalprotect"
 # The CLI has no .py suffix, so name the loader explicitly.
@@ -837,6 +840,151 @@ class PerPortalStateTests(unittest.TestCase):
             gp.forget_portal("a.example.com")
             self.assertEqual(gp.known_portals(), ["b.example.com"])
             self.assertEqual(gp.load_state("b.example.com")["username"], "ub")
+
+
+class _FakeResponse:
+    def __init__(self, body, code=200):
+        self.body = body.encode() if isinstance(body, str) else body
+        self.code = code
+
+    def read(self):
+        return self.body
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *a):
+        return False
+
+
+class _FakeOpener:
+    """Captures the request urllib would have sent; answers with a queued response or error."""
+
+    def __init__(self, response=None, error=None):
+        self.response, self.error, self.requests = response, error, []
+
+    def open(self, req, timeout=0):
+        self.requests.append(req)
+        if self.error:
+            raise self.error
+        return self.response
+
+
+class PortalHttpTests(unittest.TestCase):
+    def test_prelogin_posts_the_form_and_parses_saml(self):
+        xml = "<prelogin-response><status>Success</status><saml-auth-method>REDIRECT</saml-auth-method><saml-request>aHR0cHM6Ly9pZHAvc3Nv</saml-request></prelogin-response>"
+        opener = _FakeOpener(_FakeResponse(xml))
+        with unittest.mock.patch.object(gp, "http_opener", return_value=opener):
+            pre = gp.prelogin("vpn.example.com", "Windows", interface="gateway")
+        self.assertEqual(pre["method"], "REDIRECT")
+        req = opener.requests[0]
+        self.assertEqual(req.full_url, "https://vpn.example.com/ssl-vpn/prelogin.esp")
+        body = dict(urllib.parse.parse_qsl(req.data.decode()))
+        self.assertEqual(body["clientos"], "Windows")
+        self.assertNotIn("default-browser", body)
+        self.assertEqual(req.get_header("User-agent"), "PAN GlobalProtect")
+
+    def test_prelogin_browser_mode_adds_default_browser_fields(self):
+        xml = "<prelogin-response><saml-auth-method>REDIRECT</saml-auth-method><saml-request>aHR0cHM6Ly9pZHAvc3Nv</saml-request></prelogin-response>"
+        opener = _FakeOpener(_FakeResponse(xml))
+        with unittest.mock.patch.object(gp, "http_opener", return_value=opener), unittest.mock.patch.dict(gp.OPTS, {"browser": True}):
+            gp.prelogin("vpn.example.com", "Windows")
+        body = dict(urllib.parse.parse_qsl(opener.requests[0].data.decode()))
+        self.assertEqual((body["default-browser"], body["cas-support"]), ("1", "yes"))
+
+    def test_prelogin_network_failure_is_a_prelogin_error(self):
+        opener = _FakeOpener(error=urllib.error.URLError("no route"))
+        with unittest.mock.patch.object(gp, "http_opener", return_value=opener):
+            with self.assertRaises(gp.PreloginError) as cm:
+                gp.prelogin("vpn.example.com", "Windows")
+        self.assertIn("vpn.example.com", str(cm.exception))
+
+    def test_fetch_portal_config_posts_getconfig_and_parses(self):
+        xml = "<policy><portal-name>P</portal-name><gateways><external><list><entry name=\"gw:443\"><description>G</description></entry></list></external></gateways></policy>"
+        opener = _FakeOpener(_FakeResponse(xml))
+        with unittest.mock.patch.object(gp, "http_opener", return_value=opener):
+            cfg = gp.fetch_portal_config("vpn.example.com", "b@x.com", "PRECOOKIE", "win")
+        self.assertEqual(cfg["gateways"][0]["host"], "gw")
+        req = opener.requests[0]
+        self.assertEqual(req.full_url, "https://vpn.example.com/global-protect/getconfig.esp")
+        body = dict(urllib.parse.parse_qsl(req.data.decode()))
+        self.assertEqual((body["user"], body["prelogin-cookie"], body["server"]), ("b@x.com", "PRECOOKIE", "vpn.example.com"))
+
+    def test_fetch_portal_config_http_error_becomes_portal_config_error(self):
+        err = urllib.error.HTTPError("https://vpn.example.com/global-protect/getconfig.esp", 512, "Custom", {}, None)
+        opener = _FakeOpener(error=err)
+        with unittest.mock.patch.object(gp, "http_opener", return_value=opener):
+            with self.assertRaises(gp.PortalConfigError) as cm:
+                gp.fetch_portal_config("vpn.example.com", "b@x.com", "", "win", userauthcookie="STALE")
+        self.assertIn("512", str(cm.exception))
+
+    def test_http_opener_rejects_unreadable_certificate(self):
+        with unittest.mock.patch.dict(gp.OPTS, {"certificate": "/nonexistent/cert.pem", "key": ""}):
+            with self.assertRaises(gp.PreloginError):
+                gp.http_opener()
+
+
+class TunnelLifecycleTests(unittest.TestCase):
+    def test_nm_up_writes_a_private_passwd_file_and_removes_it(self):
+        seen = {}
+
+        def fake_run(cmd, timeout=15, input_text=None, check=False):
+            path = pathlib.Path(cmd[cmd.index("passwd-file") + 1])
+            seen["mode"] = path.stat().st_mode & 0o777
+            seen["content"] = path.read_text()
+            seen["path"] = path
+            return subprocess.CompletedProcess(cmd, 0, "", "")
+
+        auth = {"COOKIE": "user=u&authcookie=abc", "CONNECT_URL": "https://gw/", "FINGERPRINT": "pin-sha256:xyz", "RESOLVE": "gw:1.2.3.4"}
+        with tempfile.TemporaryDirectory() as d, unittest.mock.patch.dict(os.environ, {"XDG_RUNTIME_DIR": d}), \
+             unittest.mock.patch.object(gp, "run", side_effect=fake_run):
+            gp.nm_up(auth)
+        self.assertEqual(seen["mode"], 0o600)
+        self.assertIn("vpn.secrets.cookie:user=u&authcookie=abc", seen["content"])
+        self.assertIn("vpn.secrets.resolve:gw:1.2.3.4", seen["content"])
+        self.assertFalse(seen["path"].exists())
+
+    def test_nm_up_failure_raises_last_line_and_still_cleans_up(self):
+        paths = []
+
+        def fake_run(cmd, timeout=15, input_text=None, check=False):
+            paths.append(pathlib.Path(cmd[cmd.index("passwd-file") + 1]))
+            return subprocess.CompletedProcess(cmd, 4, "", "Error: Connection activation failed: the VPN service returned an error\n")
+
+        auth = {"COOKIE": "c", "CONNECT_URL": "https://gw/", "FINGERPRINT": "f"}
+        with tempfile.TemporaryDirectory() as d, unittest.mock.patch.dict(os.environ, {"XDG_RUNTIME_DIR": d}), \
+             unittest.mock.patch.object(gp, "run", side_effect=fake_run):
+            with self.assertRaises(gp.AuthError) as cm:
+                gp.nm_up(auth)
+        self.assertIn("activation failed", str(cm.exception))
+        self.assertFalse(paths[0].exists())
+
+    def test_apply_split_dns_runs_the_plan_and_stops_on_failure(self):
+        details = gp.parse_nmcli_terse("IP4.ADDRESS[1]:10.1.2.3/32\nIP4.ROUTE[1]:dst = 0.0.0.0/0, nh = 0.0.0.0, mt = 50\nIP4.DNS[1]:10.0.0.53\nIP4.DOMAIN[1]:corp.example.com\n")
+        calls = []
+
+        def fake_run(cmd, timeout=15, input_text=None, check=False):
+            calls.append(cmd)
+            return subprocess.CompletedProcess(cmd, 1 if cmd[1] == "domain" else 0, "", "Failed to set domain\n")
+
+        with unittest.mock.patch.object(gp, "split_dns_state", return_value="enabled"), \
+             unittest.mock.patch.object(gp, "nm_connection_details", return_value=details), \
+             unittest.mock.patch.object(gp, "find_iface_for_ip", return_value="vpn0"), \
+             unittest.mock.patch.object(gp, "run", side_effect=fake_run), \
+             unittest.mock.patch.object(gp, "warn"):
+            gp.apply_split_dns("auto")
+        self.assertEqual(calls[0], ["resolvectl", "dns", "vpn0", "10.0.0.53"])
+        self.assertEqual(calls[1][:3], ["resolvectl", "domain", "vpn0"])
+        self.assertEqual(len(calls), 2)  # default-route never attempted after the domain step failed
+
+    def test_apply_split_dns_skips_when_rule_missing(self):
+        with unittest.mock.patch.object(gp, "split_dns_state", return_value="needed"), \
+             unittest.mock.patch.object(gp, "run") as run:
+            gp.apply_split_dns("auto")
+        run.assert_not_called()
+
+    def test_probe_latency_unreachable_is_minus_one(self):
+        self.assertEqual(gp.probe_latency("127.0.0.1", port=1, timeout=0.5), -1)
 
 
 class ThemeColorTests(unittest.TestCase):
