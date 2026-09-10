@@ -1,6 +1,6 @@
 # Omarchy GlobalProtect plugin — design
 
-Date: 2026-09-10 · Status: approved (Brian gave blanket approval for decisions; every decision is logged below)
+Date: 2026-09-10 · Status: implemented (v0.1.0) (Brian gave blanket approval for decisions; every decision is logged below)
 
 ## Goal
 
@@ -29,6 +29,9 @@ setting is enough), Windows/macOS.
 | 10 | Desktop notifications via `notify-send` on connected / disconnected / failed. | Omarchy's notification service renders them natively. |
 | 11 | Tests use Python's stdlib `unittest` (pytest is not installed). QML is validated with `omarchy plugin validate` plus a live load in the shell. | No new tooling. |
 | 12 | Third-party code policy: only Arch official-repo packages (`openconnect`, `networkmanager-openconnect`, and the already-installed GTK/WebKit/PyGObject stack), Qt's own `QtQuick.Shapes` for the animated ring. No AUR, no pip, no vendored JS/QML. | Brian asked for security validation of anything third-party; signed distro packages with active maintenance are the bar. |
+| 13 | Settings are written by the panel through the shell's `updateEntryInline` API (like the screensaver plugin); the CLI has no `set-portal` command. Notifications are sent by `Service.qml`, not the CLI, so drops initiated by NetworkManager are announced too. | One owner per concern; the CLI stays a pure protocol tool. |
+| 14 | Execution: inline in-session with one forked helper for the Python CLI (Tasks 1–5) while the QML side was written in parallel; the helper's diff was reviewed by hand instead of by separate reviewer agents. | Brian was away and gave blanket approval; parallel work shortened the wall clock. |
+| 15 | The sign-in window is not embedded in the shell. The Quickshell spike crashed on `QtWebEngine` (`base::CommandLine cannot be properly initialized`), confirming decision 1. | Verified on this machine, Quickshell 0.3.1 + qt6-webengine 6.11.2. |
 
 ## Architecture
 
@@ -75,7 +78,6 @@ setting is enough), Windows/macOS.
 | `login` | Runs only the SSO window and stores the resulting cookie (no tunnel). | as connect |
 | `forget` | Deletes keyring entries and the WebKit website-data directory. | 0 |
 | `deps` | Prints `{"openconnect":bool,"nmOpenconnect":bool,"webkit":bool}` | 0 |
-| `set-portal <host>` | Writes the portal into this widget's `shell.json` entry (via `jq`, like the screensaver plugin). | 0 / 1 |
 
 Status JSON:
 
