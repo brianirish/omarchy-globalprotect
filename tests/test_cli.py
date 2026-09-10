@@ -631,6 +631,101 @@ class InteractiveAuthTests(unittest.TestCase):
                 gp.authenticate_interactive("gw", "u", "hunter2", "win", "", None, "gateway", cancel, openconnect_bin=self._fake(d), timeout=20)
 
 
+class NetworkOptionTests(unittest.TestCase):
+    def test_vpn_data_ssl_only_and_mtu(self):
+        data = gp.build_vpn_data("p", False, None, ssl_only=True, mtu=1400)
+        self.assertIn("disable_udp=yes", data)
+        self.assertIn("mtu=1400", data)
+        plain = gp.build_vpn_data("p", False, None)
+        self.assertNotIn("disable_udp", plain)
+        self.assertNotIn("mtu=", plain)
+        self.assertNotIn("mtu=", gp.build_vpn_data("p", False, None, mtu=0))
+
+    ROUTES = [
+        {"dst": "default", "dev": "vpn0", "protocol": "static", "scope": "link", "metric": 50},
+        {"dst": "default", "gateway": "192.168.68.1", "dev": "enp7s0", "protocol": "dhcp", "metric": 100},
+        {"dst": "1.1.1.1", "dev": "vpn0", "protocol": "static", "scope": "link", "metric": 50},
+        {"dst": "68.111.1.18", "dev": "enp7s0", "protocol": "static", "metric": 50},
+        {"dst": "192.168.68.0/22", "dev": "enp7s0", "protocol": "kernel", "scope": "link", "metric": 100},
+        {"dst": "192.168.68.1", "dev": "enp7s0", "protocol": "static", "scope": "link", "metric": 50},
+        {"dst": "10.20.0.0/16", "dev": "wlp6s0", "protocol": "kernel", "scope": "link", "metric": 600},
+        {"dst": "172.17.0.0/16", "dev": "docker0", "protocol": "kernel", "scope": "link", "metric": 0},
+    ]
+
+    def test_lan_subnets_are_kernel_link_routes_on_real_devices(self):
+        self.assertEqual(gp.lan_subnets(self.ROUTES, "vpn0"), ["192.168.68.0/22", "10.20.0.0/16"])
+
+    def test_lan_subnets_ignores_tunnel_and_host_routes(self):
+        routes = [{"dst": "10.1.2.0/24", "dev": "vpn0", "protocol": "kernel", "scope": "link"},
+                  {"dst": "192.168.1.5", "dev": "enp7s0", "protocol": "kernel", "scope": "link"}]
+        self.assertEqual(gp.lan_subnets(routes, "vpn0"), [])
+
+    RESOLVECTL = (
+        "Link 4 (vpn0)\n"
+        "    Current Scopes: DNS\n"
+        "         Protocols: -DefaultRoute -LLMNR -mDNS DNSOverTLS=opportunistic\n"
+        "                    DNSSEC=no/unsupported\n"
+        "Current DNS Server: 10.0.0.53\n"
+        "       DNS Servers: 10.0.0.53 10.0.0.54\n"
+        "        DNS Domain: ~corp.example.com ~lab.example.com\n"
+    )
+
+    def test_parse_resolvectl_link_reads_servers_and_domains(self):
+        r = gp.parse_resolvectl_link(self.RESOLVECTL)
+        self.assertEqual(r["dns"], ["10.0.0.53", "10.0.0.54"])
+        self.assertEqual(r["domains"], ["~corp.example.com", "~lab.example.com"])
+        self.assertTrue(r["active"])
+        self.assertFalse(r["defaultRoute"])
+
+    def test_parse_resolvectl_link_handles_no_scopes(self):
+        r = gp.parse_resolvectl_link("Link 4 (vpn0)\n    Current Scopes: none\n     Default Route: no\n")
+        self.assertEqual((r["dns"], r["domains"], r["active"]), ([], [], False))
+
+    def test_parse_resolvectl_default_route_yes(self):
+        text = "Link 4 (vpn0)\n    Current Scopes: DNS\n         Protocols: +DefaultRoute\n       DNS Servers: 10.0.0.53\n        DNS Domain: ~.\n"
+        self.assertTrue(gp.parse_resolvectl_link(text)["defaultRoute"])
+
+    def test_split_dns_rule_grants_resolved_link_actions_to_local_wheel(self):
+        text = gp.split_dns_rule()
+        for action in ("org.freedesktop.resolve1.set-dns-servers", "org.freedesktop.resolve1.set-domains", "org.freedesktop.resolve1.set-default-route"):
+            self.assertIn(action, text)
+        self.assertIn('isInGroup("wheel")', text)
+        self.assertIn("subject.local", text)
+
+    def test_split_dns_state_from_files(self):
+        with tempfile.TemporaryDirectory() as conf, tempfile.TemporaryDirectory() as rules:
+            conf, rules = pathlib.Path(conf), pathlib.Path(rules)
+            self.assertEqual(gp.split_dns_state(conf, rules), "not-needed")
+            (conf / "20-omarchy-dns.conf").write_text("[global-dns]\n\n[global-dns-domain-*]\nservers=1.1.1.1\n")
+            self.assertEqual(gp.split_dns_state(conf, rules), "needed")
+            (rules / gp.SPLIT_DNS_RULE_FILE).write_text(gp.split_dns_rule())
+            self.assertEqual(gp.split_dns_state(conf, rules), "enabled")
+
+    def test_split_dns_plan_routes_pushed_domains_only(self):
+        plan = gp.split_dns_plan("vpn0", ["10.0.0.53"], ["corp.example.com", "lab.example.com"], True, "auto")
+        self.assertEqual(plan, [
+            ["resolvectl", "dns", "vpn0", "10.0.0.53"],
+            ["resolvectl", "domain", "vpn0", "~corp.example.com", "~lab.example.com"],
+            ["resolvectl", "default-route", "vpn0", "no"],
+        ])
+
+    def test_split_dns_plan_full_tunnel_without_domains_takes_all_dns_in_auto(self):
+        plan = gp.split_dns_plan("vpn0", ["10.0.0.53"], [], True, "auto")
+        self.assertEqual(plan[1], ["resolvectl", "domain", "vpn0", "~."])
+        self.assertEqual(plan[2], ["resolvectl", "default-route", "vpn0", "yes"])
+
+    def test_split_dns_plan_is_empty_when_off_or_nothing_to_route(self):
+        self.assertEqual(gp.split_dns_plan("vpn0", ["10.0.0.53"], ["corp.example.com"], True, "off"), [])
+        self.assertEqual(gp.split_dns_plan("vpn0", [], ["corp.example.com"], True, "auto"), [])
+        self.assertEqual(gp.split_dns_plan("vpn0", ["10.0.0.53"], [], False, "auto"), [])
+        self.assertEqual(gp.split_dns_plan("vpn0", ["10.0.0.53"], [], True, "split"), [])
+
+    def test_global_ip6_skips_link_local(self):
+        details = gp.parse_nmcli_terse("IP6.ADDRESS[1]:fe80::1/64\nIP6.ADDRESS[2]:2001:db8::5/128\n")
+        self.assertEqual(gp.global_ip6(details), "2001:db8::5")
+        self.assertEqual(gp.global_ip6(gp.parse_nmcli_terse("IP6.ADDRESS[1]:fe80::1/64\n")), "")
+
+
 class ThemeColorTests(unittest.TestCase):
     def test_parses_minimal_toml(self):
         c = gp.parse_theme_colors('mode = "dark"\naccent = "#7d82d9"\nbackground = "#060B1E"\nforeground = "#ffcead"\n')

@@ -1,0 +1,9 @@
+#!/usr/bin/env bash
+# Installs the polkit rule that lets local wheel users set the tunnel link's DNS in
+# systemd-resolved (split DNS) without a password prompt. One polkit prompt, once.
+set -euo pipefail
+dir="$(cd "$(dirname "$0")" && pwd)"
+tmp="$(mktemp)"
+trap 'rm -f "$tmp"' EXIT
+"$dir/omarchy-globalprotect" split-dns-rule > "$tmp"
+exec pkexec install -m 644 "$tmp" /etc/polkit-1/rules.d/50-omarchy-globalprotect-resolved.rules

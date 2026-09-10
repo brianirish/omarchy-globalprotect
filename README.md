@@ -85,6 +85,18 @@ If the portal refuses the connection, check the panel's settings section:
   config fetch, `openconnect`, and the NetworkManager profile (`usercert`/`privkey`).
 - **Proxy** (`proxy`): an `http://host:port` URL used for prelogin, the config fetch,
   `openconnect`, and the tunnel.
+- **Tunnel DNS** (`dnsMode`: `auto`, `split`, `off`): Omarchy pins DNS globally through
+  NetworkManager, which silently discards the DNS servers a gateway pushes, so internal
+  hostnames would not resolve. The panel offers *Enable tunnel DNS*, a one-time polkit
+  prompt that installs a small rule letting the widget set the tunnel link's DNS in
+  systemd-resolved. `auto` routes the pushed search domains to the tunnel's DNS (and
+  everything, on a full tunnel that pushes no domains); `split` only ever routes the
+  pushed domains; `off` leaves the resolver alone. The DNS row shows what is in effect.
+- **SSL only** (`sslOnly`), **MTU override** (`mtu`), **No direct access to local
+  network** (`blockLan`): the official client's tunnel settings. The LAN block routes the
+  physical interfaces' on-link subnets into the tunnel while connected.
+- **IPv6**: the tunnel's global IPv6 address shows next to the IPv4 one when the gateway
+  assigns one (openconnect's GlobalProtect IPv6 support is still marked experimental).
 - **Connect method** (`connectMethod`: `on-demand` or `always-on`, and `pauseMinutes`):
   the *Always-On* toggle in the panel. Turning the switch off while Always-On pauses it
   for `pauseMinutes`; cancelling the sign-in window does the same.
@@ -131,6 +143,7 @@ Where things live:
 | Google session (WebKit website data) | `~/.local/share/omarchy-globalprotect/webkit/` (0700) |
 | Reusable portal session cookie, remembered password | GNOME keyring, `application=omarchy-globalprotect` |
 | System-browser callback handler | `~/.local/share/applications/omarchy-globalprotect-callback.desktop` |
+| Tunnel DNS polkit rule (optional, installed on request) | `/etc/polkit-1/rules.d/50-omarchy-globalprotect-resolved.rules` |
 | Last gateway / username / cached gateway list | `~/.local/state/omarchy-globalprotect/state.json` |
 | NetworkManager profile | `nmcli connection show GlobalProtect` |
 

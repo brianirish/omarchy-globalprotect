@@ -47,6 +47,7 @@ Panel {
     var rows = ["header"]
     if (gp.connected && gp.ip4 !== "") rows.push("address")
     if (gp.connected) rows.push("rediscover")
+    if (gp.connected && gp.splitDns === "needed" && gp.dnsMode !== "off") rows.push("splitdns")
     if (gp.username !== "" || gp.hasSession) rows.push("signin", "forget")
     if (gp.configured && gp.depsOk) {
       rows.push("gw:auto")
@@ -71,6 +72,7 @@ Panel {
     if (row === "header") gp.toggle()
     else if (row === "address") gp.copyAddress()
     else if (row === "rediscover") gp.rediscover()
+    else if (row === "splitdns") enableSplitDns()
     else if (row === "signin") gp.signInAgain()
     else if (row === "forget") openForget()
     else if (row === "install") installDeps()
@@ -116,6 +118,13 @@ Panel {
     keyCatcher.forceActiveFocus()
     gp.flash("Portal saved")
     Qt.callLater(function() { gp.refresh() })
+  }
+
+  function enableSplitDns() {
+    if (!gpPanel.bar) return
+    gpPanel.bar.run(gpPanel.pluginDir + "/bin/omarchy-globalprotect-enable-split-dns")
+    gp.flash("Installing the DNS polkit rule…")
+    depsRecheck.restart()
   }
 
   function installDeps() {
@@ -251,7 +260,7 @@ Panel {
     PanelKeyCatcher {
       id: keyCatcher
       anchors.fill: parent
-      blocked: gpPanel.forgetOpen || portalField.activeFocus || proxyField.activeFocus || certField.activeFocus || keyField.activeFocus
+      blocked: gpPanel.forgetOpen || portalField.activeFocus || proxyField.activeFocus || certField.activeFocus || keyField.activeFocus || mtuField.activeFocus
       onMoveRequested: function(dx, dy) {
         if (!gpPanel.cursorActive) { gpPanel.cursorActive = true; return }
         if (dy !== 0) gpPanel.moveCursor(dy)
@@ -374,7 +383,7 @@ Panel {
             InfoRow {
               id: addressRow
               label: "Address"
-              value: gp.ip4 !== "" ? gp.ip4 : "—"
+              value: Model.addressText(gp.ip4, gp.ip6)
               iconText: ""
               hasCursor: gpPanel.cursorRow === "address"
               onActivated: gp.copyAddress()
@@ -394,7 +403,34 @@ Panel {
 
             InfoRow {
               label: "DNS"
-              value: Model.dnsText(gp.dns, gp.searchDomains)
+              value: Model.resolverText(gp.resolver, gp.dns, gp.searchDomains, gp.splitDns)
+            }
+
+            Button {
+              visible: gp.splitDns === "needed" && gp.dnsMode !== "off"
+              width: parent.width
+              iconText: ""
+              text: "Enable tunnel DNS (polkit prompt)"
+              fontSize: Style.font.bodySmall
+              foreground: gpPanel.foreground
+              fontFamily: gpPanel.fontFamily
+              bordered: true
+              hasCursor: gpPanel.cursorRow === "splitdns"
+              horizontalPadding: Style.spacing.controlPaddingX
+              verticalPadding: Style.spacing.controlPaddingY
+              onClicked: gpPanel.enableSplitDns()
+            }
+
+            Text {
+              visible: gp.splitDns === "needed" && gp.dnsMode !== "off"
+              textFormat: Text.PlainText
+              width: parent.width
+              text: "Omarchy pins DNS globally, so the gateway's DNS is ignored and internal names will not resolve. Enabling installs a small polkit rule that lets this widget set the tunnel's DNS in systemd-resolved."
+              color: gpPanel.foreground
+              opacity: 0.55
+              font.family: gpPanel.fontFamily
+              font.pixelSize: Style.font.caption
+              wrapMode: Text.WordWrap
             }
 
             // Throughput sparkline
@@ -800,6 +836,40 @@ Panel {
 
             Toggle {
               width: parent.width
+              label: "SSL only"
+              description: "Never use ESP over UDP; the tunnel runs over TCP 443 (slower, but survives UDP-hostile networks)"
+              checked: gp.sslOnly
+              foreground: gpPanel.foreground
+              fontFamily: gpPanel.fontFamily
+              onClicked: gpPanel.saveSetting("sslOnly", !gp.sslOnly)
+            }
+
+            Toggle {
+              width: parent.width
+              label: "No direct access to local network"
+              description: "Route the LAN's subnets into the tunnel while connected (the official client's setting of the same name)"
+              checked: gp.blockLan
+              foreground: gpPanel.foreground
+              fontFamily: gpPanel.fontFamily
+              onClicked: gpPanel.saveSetting("blockLan", !gp.blockLan)
+            }
+
+            Toggle {
+              width: parent.width
+              label: "Tunnel DNS"
+              description: gp.dnsMode === "auto"
+                ? "Auto: pushed domains go to the tunnel's DNS; on a full tunnel without domains, all queries do"
+                : (gp.dnsMode === "split" ? "Split: only the pushed domains use the tunnel's DNS" : "Off: the resolver is left alone")
+              checked: gp.dnsMode !== "off"
+              foreground: gpPanel.foreground
+              fontFamily: gpPanel.fontFamily
+              onClicked: gpPanel.saveSetting("dnsMode", gp.dnsMode === "off" ? "auto" : (gp.dnsMode === "auto" ? "split" : "off"))
+            }
+
+            SettingField { id: mtuField; label: "MTU"; placeholder: "0 = automatic"; settingKey: "mtu"; current: gp.mtu > 0 ? String(gp.mtu) : ""; numeric: true }
+
+            Toggle {
+              width: parent.width
               label: "System browser for SAML"
               description: gp.systemBrowser
                 ? "Sign-in opens in your default browser; the portal hands the session back through a globalprotectcallback: link"
@@ -887,6 +957,7 @@ Panel {
     property string placeholder: ""
     property string settingKey: ""
     property string current: ""
+    property bool numeric: false
     property alias activeFocus: field.activeFocus
     width: parent ? parent.width : implicitWidth
     spacing: Style.space(8)
@@ -911,6 +982,12 @@ Panel {
       verticalPadding: Style.space(4)
       onEditingFinished: {
         var v = text.trim()
+        if (settingField.numeric) {
+          var n = parseInt(v, 10)
+          if (isNaN(n) || n < 0) n = 0
+          if (String(n) !== settingField.current && !(n === 0 && settingField.current === "")) gpPanel.saveSetting(settingField.settingKey, n)
+          return
+        }
         if (v !== settingField.current) gpPanel.saveSetting(settingField.settingKey, v)
       }
       Keys.onPressed: function(event) {

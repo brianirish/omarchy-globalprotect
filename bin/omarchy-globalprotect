@@ -149,7 +149,7 @@ def render_passwd_file(auth):
     return "\n".join(lines) + "\n"
 
 
-def build_vpn_data(portal, hip, hip_script, proxy="", certificate="", key=""):
+def build_vpn_data(portal, hip, hip_script, proxy="", certificate="", key="", ssl_only=False, mtu=0):
     data = (
         f"gateway={portal},protocol=gp,authtype=password,cookie-flags=2,gateway-flags=2,"
         f"gwcert-flags=2,resolve-flags=2,enable_csd_trojan={'yes' if hip else 'no'}"
@@ -162,6 +162,10 @@ def build_vpn_data(portal, hip, hip_script, proxy="", certificate="", key=""):
         data += f",usercert={certificate}"
     if key:
         data += f",privkey={key}"
+    if ssl_only:
+        data += ",disable_udp=yes"
+    if mtu and int(mtu) > 0:
+        data += f",mtu={int(mtu)}"
     return data
 
 
@@ -256,7 +260,8 @@ def write_bundle(path, members):
     path.chmod(0o600)
 
 
-OPTS = {"proxy": "", "certificate": "", "key": "", "browser": False, "fresh": False}
+OPTS = {"proxy": "", "certificate": "", "key": "", "browser": False, "fresh": False,
+        "ssl_only": False, "mtu": 0, "block_lan": False, "dns_mode": "auto"}
 
 
 def set_options(args):
@@ -267,6 +272,10 @@ def set_options(args):
         key=(getattr(args, "key", "") or "").strip(),
         browser=bool(getattr(args, "browser", False)),
         fresh=bool(getattr(args, "fresh", False)),
+        ssl_only=bool(getattr(args, "ssl_only", False)),
+        mtu=max(0, int(getattr(args, "mtu", 0) or 0)),
+        block_lan=bool(getattr(args, "block_lan", False)),
+        dns_mode=str(getattr(args, "dns_mode", "auto") or "auto"),
     )
 
 
@@ -303,6 +312,100 @@ def parse_callback_uri(uri):
     if not result.get("saml-username") or not token:
         raise AuthError("The sign-in callback carried no session")
     return {"username": result["saml-username"], "token": token}
+
+
+VIRTUAL_DEV_PREFIXES = ("lo", "vpn", "tun", "tap", "wg", "docker", "virbr", "br-", "veth", "podman", "cni", "flannel", "tailscale")
+
+
+def lan_subnets(routes, tunnel_iface):
+    """Kernel-added on-link subnets of physical devices, from `ip -j route`; what "no local network" must block."""
+    out = []
+    for r in routes or []:
+        dst, dev = str(r.get("dst", "")), str(r.get("dev", ""))
+        if r.get("protocol") != "kernel" or r.get("scope") != "link" or "/" not in dst:
+            continue
+        if not dev or dev == tunnel_iface or dev.startswith(VIRTUAL_DEV_PREFIXES):
+            continue
+        if dst.endswith("/32") or dst.endswith("/128"):
+            continue
+        if dst not in out:
+            out.append(dst)
+    return out
+
+
+def parse_resolvectl_link(text):
+    """What systemd-resolved actually uses on a link (`resolvectl status <link>`)."""
+    dns, domains, active, default_route = [], [], False, False
+    for line in (text or "").splitlines():
+        key, _, value = line.strip().partition(":")
+        key, value = key.strip(), value.strip()
+        if key == "Current Scopes":
+            active = value != "none" and value != ""
+        elif key == "DNS Servers":
+            dns = value.split()
+        elif key == "DNS Domain":
+            domains = value.split()
+        elif key == "Protocols" and "+DefaultRoute" in value:
+            default_route = True
+        elif key == "Default Route" and value.lower() == "yes":
+            default_route = True
+    return {"dns": dns, "domains": domains, "active": active, "defaultRoute": default_route}
+
+
+SPLIT_DNS_RULE_FILE = "50-omarchy-globalprotect-resolved.rules"
+
+
+def split_dns_rule():
+    """polkit rule: let local wheel users set the tunnel link's DNS in systemd-resolved (no prompt)."""
+    return (
+        "// Installed by omarchy-globalprotect. Lets users in wheel, in a local session, point the\n"
+        "// GlobalProtect tunnel's DNS at what the gateway pushed (split DNS) without a password prompt.\n"
+        "polkit.addRule(function(action, subject) {\n"
+        "  if ((action.id == \"org.freedesktop.resolve1.set-dns-servers\" ||\n"
+        "       action.id == \"org.freedesktop.resolve1.set-domains\" ||\n"
+        "       action.id == \"org.freedesktop.resolve1.set-default-route\" ||\n"
+        "       action.id == \"org.freedesktop.resolve1.revert\") &&\n"
+        "      subject.isInGroup(\"wheel\") && subject.local) {\n"
+        "    return polkit.Result.YES;\n"
+        "  }\n"
+        "});\n"
+    )
+
+
+def split_dns_state(conf_dir=Path("/etc/NetworkManager/conf.d"), rules_dir=Path("/etc/polkit-1/rules.d")):
+    """not-needed: no global DNS override; needed: override present, rule missing; enabled: rule installed."""
+    if (Path(rules_dir) / SPLIT_DNS_RULE_FILE).exists():
+        return "enabled"
+    try:
+        for f in sorted(Path(conf_dir).glob("*.conf")):
+            if "[global-dns" in f.read_text(errors="replace"):
+                return "needed"
+    except OSError:
+        pass
+    return "not-needed"
+
+
+def split_dns_plan(iface, dns, domains, full_tunnel, mode):
+    """resolvectl calls that make the tunnel's DNS answer for its domains (or everything on a full tunnel in auto)."""
+    if mode == "off" or not dns or not iface:
+        return []
+    if domains:
+        return [["resolvectl", "dns", iface, *dns],
+                ["resolvectl", "domain", iface, *[f"~{d.lstrip('~')}" for d in domains]],
+                ["resolvectl", "default-route", iface, "no"]]
+    if full_tunnel and mode == "auto":
+        return [["resolvectl", "dns", iface, *dns],
+                ["resolvectl", "domain", iface, "~."],
+                ["resolvectl", "default-route", iface, "yes"]]
+    return []
+
+
+def global_ip6(details):
+    for entry in nm_list(details, "IP6.ADDRESS"):
+        addr = entry.split("/")[0]
+        if addr and not addr.lower().startswith("fe80"):
+            return addr
+    return ""
 
 
 def gateway_host(name):
@@ -703,6 +806,9 @@ def status_json(portal):
         "fullTunnel": False,
         "dns": [],
         "searchDomains": [],
+        "ip6": "",
+        "resolver": {"dns": [], "domains": [], "active": False, "defaultRoute": False},
+        "splitDns": split_dns_state() if deps["nmOpenconnect"] else "not-needed",
         "detail": "",
         "deps": deps,
     }
@@ -721,8 +827,13 @@ def status_json(portal):
         gateway_ip = state_file.get("gatewayIp", "")
         if not gateway_ip:  # state written before the IP was recorded: the ESP peer is the gateway
             gateway_ip = next((p[1] for p in peers if p[0] == "udp" and p[2] == ESP_PORT), "")
+        try:
+            rs = run(["resolvectl", "status", iface], timeout=5) if iface else None
+            resolver = parse_resolvectl_link(rs.stdout if rs and rs.returncode == 0 else "")
+        except (OSError, subprocess.TimeoutExpired):
+            resolver = parse_resolvectl_link("")
         out.update({
-            "iface": iface, "ip4": ip, "since": since, "rxBytes": rx, "txBytes": tx,
+            "iface": iface, "ip4": ip, "ip6": global_ip6(d), "resolver": resolver, "since": since, "rxBytes": rx, "txBytes": tx,
             "protocol": detect_protocol(peers, gateway_ip), "gatewayIp": gateway_ip,
             "routes": routes, "fullTunnel": is_full_tunnel(routes),
             "dns": nm_list(d, "IP4.DNS"), "searchDomains": nm_list(d, "IP4.DOMAIN"),
@@ -1426,7 +1537,7 @@ def ensure_nm_profile(portal, hip, hip_script=None):
     """Create or update the GlobalProtect NM profile. Idempotent."""
     if hip and hip_script is None:
         hip_script = hip_script_path()
-    data = build_vpn_data(portal, hip, hip_script, OPTS["proxy"], OPTS["certificate"], OPTS["key"])
+    data = build_vpn_data(portal, hip, hip_script, OPTS["proxy"], OPTS["certificate"], OPTS["key"], OPTS["ssl_only"], OPTS["mtu"])
     cmd = nm_profile_command(nm_connection_state() is not None, data)
     debug_log(" ".join(cmd))
     try:
@@ -1435,6 +1546,45 @@ def ensure_nm_profile(portal, hip, hip_script=None):
         raise AuthError(f"NetworkManager profile setup failed: {e}")
     if r.returncode != 0:
         raise AuthError(f"NetworkManager profile setup failed: {last_meaningful_line(r.stderr)}")
+
+
+def apply_lan_block(enabled):
+    """Route the physical LAN subnets into the tunnel (which drops them) when "no local network" is on."""
+    subnets = []
+    if enabled:
+        try:
+            subnets = lan_subnets(json.loads(run(["ip", "-j", "route", "show"]).stdout), "")
+        except (OSError, ValueError, subprocess.TimeoutExpired):
+            subnets = []
+    debug_log(f"lan block {'on' if enabled else 'off'}: {subnets}")
+    try:
+        run(["nmcli", "connection", "modify", NM_CONNECTION, "ipv4.routes", ",".join(subnets)], timeout=20)
+    except (OSError, subprocess.TimeoutExpired) as e:
+        warn(f"Could not update the local-network block: {e}")
+
+
+def apply_split_dns(mode):
+    """After activation: point the tunnel link's DNS at what the gateway pushed, if the polkit rule allows it."""
+    if mode == "off":
+        return
+    if split_dns_state() == "needed":
+        debug_log("split dns: global DNS override present and the polkit rule is not installed; skipping")
+        return
+    d = nm_connection_details()
+    ip = d.get("IP4.ADDRESS[1]", "").split("/")[0]
+    iface = find_iface_for_ip(ip) if ip else ""
+    routes = nm_routes(d)
+    plan = split_dns_plan(iface, nm_list(d, "IP4.DNS"), nm_list(d, "IP4.DOMAIN"), is_full_tunnel(routes), mode)
+    for cmd in plan:
+        try:
+            r = run(cmd, timeout=15)
+            debug_log(" ".join(cmd) + f" rc={r.returncode} {last_meaningful_line(r.stderr)!r}")
+            if r.returncode != 0:
+                warn(f"DNS setup failed: {last_meaningful_line(r.stderr) or ' '.join(cmd)}")
+                return
+        except (OSError, subprocess.TimeoutExpired) as e:
+            warn(f"DNS setup failed: {e}")
+            return
 
 
 def nm_up(auth, timeout=60):
@@ -1580,7 +1730,9 @@ def cmd_connect(args):
         gateway_host = urllib.parse.urlsplit(auth["CONNECT_URL"]).hostname or ""
         save_state(gateway=gateway_host, gatewayIp=resolve_host(gateway_host) if gateway_host else "", portal=portal)
         emit("activating")
+        apply_lan_block(OPTS["block_lan"])
         nm_up(auth)
+        apply_split_dns(OPTS["dns_mode"])
         emit("connected")
         clear_runfile()
     except Cancelled as e:
@@ -1613,6 +1765,11 @@ def cmd_disconnect(args):
         nm_down()
     except AuthError as e:
         fail(str(e))
+
+
+def cmd_split_dns_rule(args):
+    """Prints the polkit rule the enable-split-dns helper installs (via pkexec)."""
+    sys.stdout.write(split_dns_rule())
 
 
 def cmd_callback(args):
@@ -1782,6 +1939,11 @@ def main(argv=None):
         sp.add_argument("--proxy", default="", help="proxy URL for prelogin, the config fetch, openconnect, and the tunnel")
         sp.add_argument("--certificate", default="", help="client certificate file (PEM/PKCS#12) for TLS client auth")
         sp.add_argument("--key", default="", help="client certificate key file, if separate")
+        sp.add_argument("--ssl-only", dest="ssl_only", action="store_true", help="never use ESP over UDP (openconnect --no-dtls)")
+        sp.add_argument("--mtu", type=int, default=0, help="tunnel MTU override (0 = let openconnect decide)")
+        sp.add_argument("--block-lan", dest="block_lan", action="store_true", help="no direct access to the local network while connected")
+        sp.add_argument("--dns-mode", dest="dns_mode", default="auto", choices=("auto", "split", "off"),
+                        help="how the tunnel's DNS is applied to systemd-resolved: auto, split (pushed domains only), off")
 
     for name, fn, help_text in (
         ("status", cmd_status, "print the current state as JSON"),
@@ -1794,6 +1956,7 @@ def main(argv=None):
         ("collect-logs", cmd_collect_logs, "write a scrubbed troubleshooting tarball (default: ~/Downloads)"),
         ("gateways", cmd_gateways, "list the portal's gateways (--refresh fetches, --probe measures latency)"),
         ("callback", cmd_callback, "internal: receive a globalprotectcallback: URI from the browser"),
+        ("split-dns-rule", cmd_split_dns_rule, "print the polkit rule that lets the widget set the tunnel's DNS"),
     ):
         sp = sub.add_parser(name, help=help_text)
         common(sp)

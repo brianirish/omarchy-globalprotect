@@ -1,5 +1,16 @@
 # Changelog
 
+## Unreleased
+
+- Tunnel DNS (`dnsMode`): the gateway's DNS servers and search domains are applied to
+  the tunnel link in systemd-resolved after activation, which Omarchy's global DNS pin
+  otherwise discards. Needs a one-time polkit rule (*Enable tunnel DNS* button, `pkexec`).
+  `auto` routes pushed domains (all queries on a full tunnel without domains), `split`
+  routes pushed domains only, `off` does nothing. The DNS row shows what is in effect.
+- SSL only (`sslOnly`, `disable_udp`), MTU override (`mtu`), and No direct access to
+  local network (`blockLan`: LAN subnets routed into the tunnel via `ipv4.routes`).
+- IPv6: `status` reports the tunnel's global IPv6 address; the Address row shows it.
+
 ## 0.5.0 — 2026-09-10
 
 - Username/password portals (LDAP/RADIUS): when prelogin offers no SAML, a themed

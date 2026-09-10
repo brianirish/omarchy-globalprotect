@@ -35,6 +35,14 @@ function normalizeStatus(raw) {
     fullTunnel: s.fullTunnel === true,
     dns: Array.isArray(s.dns) ? s.dns.map(String) : [],
     searchDomains: Array.isArray(s.searchDomains) ? s.searchDomains.map(String) : [],
+    ip6: String(s.ip6 || ""),
+    resolver: {
+      dns: s.resolver && Array.isArray(s.resolver.dns) ? s.resolver.dns.map(String) : [],
+      domains: s.resolver && Array.isArray(s.resolver.domains) ? s.resolver.domains.map(String) : [],
+      active: !!(s.resolver && s.resolver.active === true),
+      defaultRoute: !!(s.resolver && s.resolver.defaultRoute === true)
+    },
+    splitDns: ["not-needed", "needed", "enabled"].indexOf(s.splitDns) >= 0 ? s.splitDns : "not-needed",
     detail: String(s.detail || ""),
     deps: {
       openconnect: deps.openconnect === true,
@@ -81,6 +89,24 @@ function dnsText(dns, domains) {
   if (dns && dns.length > 0) parts.push(dns.join(", "))
   if (domains && domains.length > 0) parts.push(domains.join(", "))
   return parts.length > 0 ? parts.join(" · ") : "—"
+}
+
+// The DNS row: what resolved actually uses on the tunnel, else what was pushed and why it is idle.
+function resolverText(resolver, pushedDns, pushedDomains, splitDns) {
+  if (resolver && resolver.active && resolver.dns.length > 0) {
+    var scope = resolver.domains.indexOf("~.") >= 0 ? "all queries" : (resolver.domains.length > 0 ? resolver.domains.join(", ") : "")
+    return resolver.dns.join(", ") + (scope !== "" ? " · " + scope : "")
+  }
+  var pushed = dnsText(pushedDns, pushedDomains)
+  if (pushed === "—") return "—"
+  return pushed + (splitDns === "needed" ? " · not applied" : " · idle")
+}
+
+function addressText(ip4, ip6) {
+  if (ip4 === "" && ip6 === "") return "—"
+  if (ip6 === "") return ip4
+  if (ip4 === "") return ip6
+  return ip4 + " · " + ip6
 }
 
 // Host state (the official client's Host Profile tab): what hipreport.sh claims.

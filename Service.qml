@@ -30,6 +30,10 @@ Item {
   readonly property string proxy: String(setting("proxy", "")).trim()
   readonly property string certificate: String(setting("certificate", "")).trim()
   readonly property string certificateKey: String(setting("certificateKey", "")).trim()
+  readonly property string dnsMode: ["auto", "split", "off"].indexOf(String(setting("dnsMode", "auto"))) >= 0 ? String(setting("dnsMode", "auto")) : "auto"
+  readonly property bool sslOnly: setting("sslOnly", false) === true
+  readonly property int mtu: Math.max(0, parseInt(String(setting("mtu", 0)), 10) || 0)
+  readonly property bool blockLan: setting("blockLan", false) === true
   readonly property int pauseMinutes: Math.min(1440, Math.max(1, parseInt(String(setting("pauseMinutes", 30)), 10) || 30))
   readonly property int refreshIntervalSec: Math.min(120, Math.max(2, parseInt(String(setting("refreshIntervalSec", 5)), 10) || 5))
 
@@ -55,6 +59,9 @@ Item {
   property bool fullTunnel: false
   property var dns: []
   property var searchDomains: []
+  property string ip6: ""
+  property var resolver: ({ dns: [], domains: [], active: false, defaultRoute: false })
+  property string splitDns: "not-needed"
   property var deps: ({ openconnect: false, nmOpenconnect: false, webkit: false })
   property string actionStatus: ""
   property string lastError: ""
@@ -98,6 +105,10 @@ Item {
     if (proxy !== "") args.push("--proxy", proxy)
     if (certificate !== "") args.push("--certificate", certificate)
     if (certificateKey !== "") args.push("--key", certificateKey)
+    if (sslOnly) args.push("--ssl-only")
+    if (mtu > 0) args.push("--mtu", String(mtu))
+    if (blockLan) args.push("--block-lan")
+    args.push("--dns-mode", dnsMode)
     return args.concat(extra || [])
   }
 
@@ -130,6 +141,9 @@ Item {
     fullTunnel = s.fullTunnel
     dns = s.dns
     searchDomains = s.searchDomains
+    ip6 = s.ip6
+    resolver = s.resolver
+    splitDns = s.splitDns
     deps = s.deps
     if (s.state === "connected") sample(s.rxBytes, s.txBytes)
     else resetSamples()

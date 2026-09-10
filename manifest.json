@@ -31,7 +31,11 @@
       "samlBrowser": "embedded",
       "proxy": "",
       "certificate": "",
-      "certificateKey": ""
+      "certificateKey": "",
+      "dnsMode": "auto",
+      "sslOnly": false,
+      "mtu": 0,
+      "blockLan": false
     },
     "schema": [
       {
@@ -106,6 +110,30 @@
         "key": "certificateKey",
         "type": "string",
         "label": "Client certificate key file (optional)"
+      },
+      {
+        "key": "dnsMode",
+        "type": "string",
+        "label": "Tunnel DNS (auto, split, off)"
+      },
+      {
+        "key": "sslOnly",
+        "type": "boolean",
+        "label": "SSL only (no ESP over UDP)"
+      },
+      {
+        "key": "mtu",
+        "type": "integer",
+        "label": "MTU override (0 = automatic)",
+        "min": 0,
+        "max": 9000,
+        "step": 10,
+        "defaultValue": 0
+      },
+      {
+        "key": "blockLan",
+        "type": "boolean",
+        "label": "No direct access to local network"
       }
     ]
   }

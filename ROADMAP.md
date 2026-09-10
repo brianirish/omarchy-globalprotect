@@ -121,11 +121,11 @@ Pick where you land.
 
 ### v0.6 — Network
 
-- [ ] Split DNS through systemd-resolved
-- [ ] No direct access to local network
-- [ ] SSL-only toggle (disable ESP)
-- [ ] MTU override
-- [ ] IPv6 addressing in status and panel
+- [x] Split DNS through systemd-resolved
+- [x] No direct access to local network
+- [x] SSL-only toggle (disable ESP)
+- [x] MTU override
+- [x] IPv6 addressing in status and panel
 
 ### v0.7 — Portal-driven
 
