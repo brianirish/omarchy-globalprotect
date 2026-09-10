@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.2.0 — 2026-09-10
 
 - The NetworkManager profile is persistent (`vpn.persistent yes`): link changes and
   resume from suspend no longer tear the tunnel down; openconnect reconnects with the

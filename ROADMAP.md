@@ -85,7 +85,7 @@ sparkline, keyboard navigation, no root daemon, and NetworkManager ownership
 - [x] HIP report, gateway by name, reported client OS, SAML at gateway or portal
 - [x] Keyboard navigation, notifications, one-click dependency install
 
-### v0.2 — Resilient
+### v0.2.0 — Resilient (shipped 2026-09-10)
 
 The tunnel survives the network, and you can see what it negotiated.
 
