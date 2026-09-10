@@ -48,6 +48,7 @@ Panel {
     if (gp.connected) rows.push("rediscover")
     if (gp.username !== "" || gp.hasSession) rows.push("signin", "forget")
     if (gp.configured && gp.everPolled && !gp.depsOk) rows.push("install")
+    if (gp.configured) rows.push("logs")
     return rows
   }
 
@@ -66,6 +67,7 @@ Panel {
     else if (row === "signin") gp.signInAgain()
     else if (row === "forget") openForget()
     else if (row === "install") installDeps()
+    else if (row === "logs") gp.collectLogs()
   }
 
   function openForget() {
@@ -244,6 +246,7 @@ Panel {
         else if (k === "c") gp.copyAddress()
         else if (k === "s") gp.signInAgain()
         else if (k === "n") gp.rediscover()
+        else if (k === "l") gp.collectLogs()
         else if (k === "f") gpPanel.openForget()
       }
 
@@ -713,6 +716,31 @@ Panel {
               foreground: gpPanel.foreground
               fontFamily: gpPanel.fontFamily
               onClicked: gpPanel.saveSetting("hipReport", !gp.hipReport)
+            }
+
+            Toggle {
+              width: parent.width
+              label: "Debug logging"
+              description: "Record each connect step in ~/.local/state/omarchy-globalprotect/debug.log"
+              checked: gp.debug
+              foreground: gpPanel.foreground
+              fontFamily: gpPanel.fontFamily
+              onClicked: gpPanel.saveSetting("debug", !gp.debug)
+            }
+
+            Button {
+              width: parent.width
+              iconText: ""
+              iconSpinning: gp.collectingLogs
+              text: "Collect logs"
+              fontSize: Style.font.bodySmall
+              foreground: gpPanel.foreground
+              fontFamily: gpPanel.fontFamily
+              bordered: true
+              hasCursor: gpPanel.cursorRow === "logs"
+              horizontalPadding: Style.spacing.controlPaddingX
+              verticalPadding: Style.spacing.controlPaddingY
+              onClicked: gp.collectLogs()
             }
 
             Text {

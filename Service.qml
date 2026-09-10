@@ -24,6 +24,7 @@ Item {
   readonly property string clientOs: ["win", "linux", "mac"].indexOf(String(setting("clientOs", "win"))) >= 0 ? String(setting("clientOs", "win")) : "win"
   readonly property bool hipReport: setting("hipReport", false) === true
   readonly property string authInterface: ["auto", "portal", "gateway"].indexOf(String(setting("authInterface", "auto"))) >= 0 ? String(setting("authInterface", "auto")) : "auto"
+  readonly property bool debug: setting("debug", false) === true
   readonly property int refreshIntervalSec: Math.min(120, Math.max(2, parseInt(String(setting("refreshIntervalSec", 5)), 10) || 5))
 
   // unconfigured | missing-deps | disconnected | authenticating | activating | connected | error
@@ -64,6 +65,7 @@ Item {
   readonly property bool transitioning: state === "authenticating" || state === "activating" || connectProc.running || disconnectProc.running
   readonly property bool active: _desired === -1 ? (connected || state === "authenticating" || state === "activating") : _desired === 1
   readonly property bool busy: transitioning || forgetProc.running
+  readonly property bool collectingLogs: collectLogsProc.running
   // The CLI remembers the last portal itself, so a widget whose settings have not
   // been injected yet (plugin hot-reload) still knows it is configured.
   property string reportedPortal: ""
@@ -73,6 +75,7 @@ Item {
   function cliArgs(cmd, extra) {
     var args = [cliPath, cmd, "--portal", portal, "--gateway", gateway, "--client-os", clientOs, "--auth-interface", authInterface]
     if (hipReport) args.push("--hip")
+    if (debug) args.push("--debug")
     return args.concat(extra || [])
   }
 
@@ -205,6 +208,14 @@ Item {
   onPanelOpenChanged: if (panelOpen) loadHostState()
   onHipReportChanged: if (panelOpen) loadHostState()
   onClientOsChanged: if (panelOpen) loadHostState()
+
+  // The official client's "Collect Logs": a scrubbed tarball for troubleshooting.
+  function collectLogs() {
+    if (collectLogsProc.running) return
+    flash("Collecting logs…")
+    collectLogsProc.command = cliArgs("collect-logs")
+    collectLogsProc.running = true
+  }
 
   function forget() {
     if (forgetProc.running) return
@@ -341,6 +352,22 @@ Item {
       var parsed = null
       try { parsed = JSON.parse(hostStateOut.text) } catch (e) {}
       if (code === 0 && parsed) root.hostState = Model.normalizeHostState(parsed)
+    }
+  }
+
+  Process {
+    id: collectLogsProc
+    stdout: StdioCollector { id: collectOut; waitForEnd: true }
+    stderr: StdioCollector { id: collectErr; waitForEnd: true }
+    onExited: function(code) {
+      var m = String(collectOut.text || "").match(/^path=(.+)$/m)
+      if (code === 0 && m) {
+        Quickshell.execDetached(["bash", "-c", "printf %s " + Util.shellQuote(m[1]) + " | wl-copy"])
+        root.flash("Logs saved · path copied")
+        root.notify("Logs collected", m[1], "document-save")
+      } else {
+        root.flash(String(collectErr.text || "").replace(/^error=/m, "").trim() || "Could not collect logs")
+      }
     }
   }
 

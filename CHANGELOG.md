@@ -13,6 +13,11 @@
 - *Host state* section in the panel and a `hip-report` CLI command: what the HIP
   report claims about this machine (OS and client version, host name and ID, and any
   security products the stock script lists).
+- *Collect logs* (`l` key, panel button, `collect-logs` CLI): a 0600 tarball in
+  `~/Downloads` with status, profile, journals, debug log, and HIP preview; cookies and
+  passwords are masked.
+- *Debug logging* setting (`debug` in `shell.json`, `--debug` on the CLI): each connect
+  step is appended to `~/.local/state/omarchy-globalprotect/debug.log` (rotated at 1 MB).
 
 ## 0.1.0 — 2026-09-10
 

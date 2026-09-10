@@ -24,7 +24,8 @@
       "clientOs": "win",
       "hipReport": false,
       "refreshIntervalSec": 5,
-      "authInterface": "auto"
+      "authInterface": "auto",
+      "debug": false
     },
     "schema": [
       {
@@ -60,6 +61,11 @@
         "max": 120,
         "step": 1,
         "defaultValue": 5
+      },
+      {
+        "key": "debug",
+        "type": "boolean",
+        "label": "Debug logging"
       }
     ]
   }

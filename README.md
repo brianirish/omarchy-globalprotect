@@ -14,7 +14,7 @@ no password prompts once installed.
   usually a window that flashes and closes. When the portal hands back a
   reusable session cookie it is kept in your keyring and reused until it expires.
 - **Keyboard-first** like the stock panels: `j`/`k` move, `Enter` activates,
-  `t` toggles, `c` copies the address, `n` rediscovers the network, `s` signs in again, `f` forgets the session, `Esc` closes.
+  `t` toggles, `c` copies the address, `n` rediscovers the network, `l` collects logs, `s` signs in again, `f` forgets the session, `Esc` closes.
 - **NetworkManager owns the tunnel**, so routes, DNS, and teardown behave like any
   other NM VPN, and `nmcli connection down GlobalProtect` works from a terminal too.
   The profile is persistent: a Wi-Fi roam, cable swap, or resume from suspend makes
@@ -94,6 +94,7 @@ bin/omarchy-globalprotect disconnect
 bin/omarchy-globalprotect login       # sign in only, store the session
 bin/omarchy-globalprotect forget      # drop the keyring entry and the WebKit data
 bin/omarchy-globalprotect hip-report --client-os win   # what the HIP report claims (JSON)
+bin/omarchy-globalprotect collect-logs                 # scrubbed troubleshooting tarball in ~/Downloads
 ```
 
 Where things live:
@@ -119,6 +120,10 @@ Where things live:
   openconnect said; `bin/omarchy-globalprotect connect --portal <host>` in a
   terminal prints each phase.
 - **Wrong or expired session** — *Forget session* in the panel, then connect again.
+- **Reporting a problem** — turn on *Debug logging* in the panel's settings, reproduce,
+  then *Collect logs* (`l`). The tarball in `~/Downloads` holds the status JSON, the
+  NetworkManager profile, the NetworkManager and openconnect journal, the debug log,
+  and the HIP report preview, with cookies and passwords masked.
 
 ## Development
 

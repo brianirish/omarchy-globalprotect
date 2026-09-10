@@ -7,6 +7,8 @@ and handing the resulting session to `nmcli connection up`.
 """
 import argparse
 import base64
+import datetime
+import io
 import json
 import os
 import re
@@ -15,6 +17,7 @@ import shutil
 import socket
 import subprocess
 import sys
+import tarfile
 import time
 import urllib.error
 import urllib.parse
@@ -33,6 +36,8 @@ AUTH_INTERFACES = ("auto", "portal", "gateway")
 # "auto" probes the gateway interface on the configured host first, then the portal.
 PRELOGIN_PATHS = {"portal": "global-protect/prelogin.esp", "gateway": "ssl-vpn/prelogin.esp"}
 ESP_PORT = 4501  # GlobalProtect ESP-over-UDP; the HTTPS tunnel fallback uses 443
+DEBUG_LOG_MAX = 1024 * 1024
+BUNDLE_DIR = "omarchy-globalprotect-logs"
 
 
 class PreloginError(Exception):
@@ -201,6 +206,35 @@ def is_full_tunnel(routes):
     return any(r in ("0.0.0.0/0", "::/0") for r in routes)
 
 
+_SECRET_KV_RE = re.compile(r"(?i)((?:prelogin-cookie|portal-userauthcookie|authcookie|vpn\.secrets\.cookie|passwd|password)\s*[=:]\s*['\"]?)([^'\"&\s]+)")
+_SECRET_XML_RE = re.compile(r"(?i)(<(prelogin-cookie|portal-userauthcookie)>)([^<]+)")
+
+
+def scrub_secrets(text):
+    """Mask session cookies and passwords in any text that leaves the machine (log bundles)."""
+    text = _SECRET_XML_RE.sub(r"\1<redacted>", text or "")
+    return _SECRET_KV_RE.sub(r"\1<redacted>", text)
+
+
+def bundle_path(base_dir, when):
+    return Path(base_dir) / f"{BUNDLE_DIR}-{when:%Y%m%d-%H%M%S}.tar.gz"
+
+
+def write_bundle(path, members):
+    """Write a 0600 tar.gz whose members are {name: text} under a single top-level directory."""
+    path = Path(path)
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "wb") as f, tarfile.open(fileobj=f, mode="w:gz") as tar:
+        for name, content in members.items():
+            data = content.encode("utf-8", "replace") if isinstance(content, str) else bytes(content)
+            info = tarfile.TarInfo(f"{BUNDLE_DIR}/{name}")
+            info.size = len(data)
+            info.mtime = int(time.time())
+            info.mode = 0o600
+            tar.addfile(info, io.BytesIO(data))
+    path.chmod(0o600)
+
+
 def parse_hip_report(xml_text):
     """Flatten a HIP report (what hipreport.sh prints) into the fields worth showing."""
     try:
@@ -305,6 +339,29 @@ def read_runfile():
     except (OSError, ValueError):
         d["alive"] = False
     return d
+
+
+_DEBUG = False
+
+
+def set_debug(on):
+    global _DEBUG
+    _DEBUG = bool(on)
+
+
+def debug_log(msg):
+    """Append one timestamped line to the debug log when --debug is on. Never pass secrets."""
+    if not _DEBUG:
+        return
+    try:
+        path = state_dir() / "debug.log"
+        if path.exists() and path.stat().st_size > DEBUG_LOG_MAX:
+            path.replace(path.with_name("debug.log.1"))
+        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
+        with os.fdopen(fd, "a") as f:
+            f.write(f"{datetime.datetime.now().isoformat(timespec='seconds')} {msg}\n")
+    except OSError:
+        pass
 
 
 def load_state():
@@ -673,6 +730,7 @@ def pick_prelogin(portal, client_os, setting):
         try:
             return iface, prelogin(portal, client_os, interface=iface)
         except PreloginError as e:
+            debug_log(f"prelogin via {iface} rejected: {e}")
             last = e
     raise last
 
@@ -685,10 +743,14 @@ def prelogin(portal, client_os, timeout=20, interface="portal"):
         prelogin_url(portal, interface), data=body, method="POST",
         headers={"User-Agent": "PAN GlobalProtect", "Content-Type": "application/x-www-form-urlencoded"},
     )
+    debug_log(f"prelogin POST {prelogin_url(portal, interface)} clientos={client_os}")
     try:
         with urllib.request.urlopen(req, timeout=timeout) as resp:
-            return parse_prelogin(resp.read().decode("utf-8", "replace"))
+            pre = parse_prelogin(resp.read().decode("utf-8", "replace"))
+            debug_log(f"prelogin ok: method={pre['method']}")
+            return pre
     except urllib.error.URLError as e:
+        debug_log(f"prelogin failed: {getattr(e, 'reason', e)}")
         raise PreloginError(f"Could not reach {portal}: {getattr(e, 'reason', e)}")
     except OSError as e:
         raise PreloginError(f"Could not reach {portal}: {e}")
@@ -715,13 +777,17 @@ def last_meaningful_line(text):
 
 def authenticate(portal, cookie_kind, cookie, username, client_os, gateway, hip_script, timeout=60, interface="portal"):
     """Exchange a SAML cookie for a session cookie; the cookie travels over stdin only."""
+    cmd = authenticate_command(portal, cookie_kind, username, client_os, gateway, hip_script, interface)
+    debug_log("openconnect " + " ".join(cmd[1:]))
     try:
-        r = run(authenticate_command(portal, cookie_kind, username, client_os, gateway, hip_script, interface), timeout=timeout, input_text=cookie + "\n")
+        r = run(cmd, timeout=timeout, input_text=cookie + "\n")
     except subprocess.TimeoutExpired:
         raise AuthError("openconnect timed out talking to the portal")
     except OSError as e:
         raise AuthError(f"Could not run openconnect: {e}")
     auth = parse_authenticate_output(r.stdout)
+    debug_log(f"openconnect --authenticate rc={r.returncode} host={auth.get('HOST', '')} connect_url={auth.get('CONNECT_URL', '')} "
+              f"fingerprint={auth.get('FINGERPRINT', '')} resolve={auth.get('RESOLVE', '')} stderr={last_meaningful_line(r.stderr)!r}")
     if r.returncode != 0 or not all(auth.get(k) for k in ("COOKIE", "CONNECT_URL", "FINGERPRINT")):
         raise AuthError(last_meaningful_line(r.stderr) or "Portal login failed")
     return auth
@@ -802,8 +868,10 @@ def ensure_nm_profile(portal, hip, hip_script=None):
     if hip and hip_script is None:
         hip_script = hip_script_path()
     data = build_vpn_data(portal, hip, hip_script)
+    cmd = nm_profile_command(nm_connection_state() is not None, data)
+    debug_log(" ".join(cmd))
     try:
-        r = run(nm_profile_command(nm_connection_state() is not None, data), timeout=20)
+        r = run(cmd, timeout=20)
     except (OSError, subprocess.TimeoutExpired) as e:
         raise AuthError(f"NetworkManager profile setup failed: {e}")
     if r.returncode != 0:
@@ -817,6 +885,7 @@ def nm_up(auth, timeout=60):
         with os.fdopen(fd, "w") as f:
             f.write(render_passwd_file(auth))
         r = run(["nmcli", "--wait", str(timeout), "connection", "up", NM_CONNECTION, "passwd-file", str(path)], timeout=timeout + 10)
+        debug_log(f"nmcli connection up rc={r.returncode} {last_meaningful_line(r.stderr)!r}")
         if r.returncode != 0:
             raise AuthError(last_meaningful_line(r.stderr) or "NetworkManager could not bring the tunnel up")
     except subprocess.TimeoutExpired:
@@ -831,6 +900,7 @@ def nm_up(auth, timeout=60):
 def nm_down():
     try:
         r = run(["nmcli", "connection", "down", NM_CONNECTION], timeout=30)
+        debug_log(f"nmcli connection down rc={r.returncode} {last_meaningful_line(r.stderr)!r}")
     except (OSError, subprocess.TimeoutExpired) as e:
         raise AuthError(f"Disconnect failed: {e}")
     if r.returncode != 0 and "not an active connection" not in r.stderr and "unknown connection" not in r.stderr:
@@ -849,6 +919,7 @@ def warn(msg):
 
 
 def fail(msg, code=1):
+    debug_log(f"error({code}): {msg}")
     print(f"error={msg}", file=sys.stderr, flush=True)
     clear_runfile()
     sys.exit(code)
@@ -866,6 +937,7 @@ def sign_in(portal, client_os, auth_interface="auto"):
     result = run_sso_window(portal, pre["method"], pre["request"])
     kind, cookie = choose_cookie(result)
     username = result["saml-username"]
+    debug_log(f"sso done: interface={iface} cookie-kind={kind} user={username} portal-cookie={'yes' if result.get('portal-userauthcookie') else 'no'}")
     if result.get("portal-userauthcookie"):
         keyring_store(portal, result["portal-userauthcookie"])
     save_state(username=username, portal=portal, authInterface=iface)
@@ -895,11 +967,13 @@ def cmd_connect(args):
         if args.hip and hip_script is None:
             warn("HIP report requested but openconnect's hipreport.sh was not found; continuing without HIP")
         use_hip = bool(args.hip and hip_script)
+        debug_log(f"connect portal={portal} gateway={args.gateway!r} os={args.client_os} hip={use_hip} interface={args.auth_interface} fresh={args.fresh}")
         ensure_nm_profile(portal, use_hip, hip_script)
         auth = None
         username = load_state().get("username", "")
         if not args.fresh and username:
             cookie = keyring_lookup(portal)
+            debug_log(f"keyring portal cookie: {'found' if cookie else 'absent'}")
             if cookie:
                 emit("authenticating")
                 try:
@@ -983,6 +1057,55 @@ def hip_report_preview(client_os, username, ip):
     return parse_hip_report(r.stdout)
 
 
+def _cmd_text(cmd, timeout=20):
+    try:
+        r = run(cmd, timeout=timeout)
+    except (OSError, subprocess.TimeoutExpired) as e:
+        return f"<{' '.join(cmd)} failed: {e}>\n"
+    return (r.stdout or "") + (f"\n[stderr]\n{r.stderr}" if r.stderr else "")
+
+
+def collect_logs_members(portal, client_os):
+    """Everything a maintainer needs to see, with cookies and passwords masked."""
+    state = load_state()
+    members = {
+        "status.json": json.dumps(status_json(portal), indent=1),
+        "deps.json": json.dumps(check_deps()),
+        "versions.txt": _cmd_text(["openconnect", "--version"])
+        + _cmd_text(["pacman", "-Q", "networkmanager", "networkmanager-openconnect", "openconnect", "webkit2gtk-4.1", "python-gobject"])
+        + _cmd_text(["omarchy", "version"]),
+        "nm-profile.txt": _cmd_text(["nmcli", "connection", "show", NM_CONNECTION]),
+        "journal-networkmanager.txt": _cmd_text(["journalctl", "-u", "NetworkManager", "--since", "-2 days", "-n", "5000", "-o", "short-iso", "--no-pager"], timeout=60),
+        "journal-openconnect.txt": _cmd_text(["journalctl", "-t", "openconnect", "-t", "nm-openconnect-service", "--since", "-2 days", "-n", "5000", "-o", "short-iso", "--no-pager"], timeout=60),
+        "state.json": json.dumps(state, indent=1),
+    }
+    dbg = state_dir() / "debug.log"
+    if dbg.exists():
+        members["debug.log"] = dbg.read_text(errors="replace")
+    try:
+        members["hip-report.json"] = json.dumps(hip_report_preview(client_os, state.get("username", ""), ""), indent=1)
+    except HipError as e:
+        members["hip-report.json"] = json.dumps({"error": str(e)})
+    return {name: scrub_secrets(text) for name, text in members.items()}
+
+
+def default_bundle_dir():
+    downloads = Path.home() / "Downloads"
+    return downloads if downloads.is_dir() else state_dir()
+
+
+def cmd_collect_logs(args):
+    """The official client's collect-log: one tarball to attach to a bug report."""
+    base = Path(args.output).expanduser() if args.output else default_bundle_dir()
+    try:
+        base.mkdir(parents=True, exist_ok=True)
+        path = bundle_path(base, datetime.datetime.now())
+        write_bundle(path, collect_logs_members(resolve_portal(args), args.client_os))
+    except OSError as e:
+        fail(f"Could not write the log bundle: {e}")
+    print(f"path={path}", flush=True)
+
+
 def cmd_hip_report(args):
     """What the HIP report says about this machine (the official client's Host Profile tab)."""
     state = load_state()
@@ -1006,6 +1129,7 @@ def main(argv=None):
         sp.add_argument("--fresh", action="store_true", help="ignore any stored session and sign in again")
         sp.add_argument("--auth-interface", dest="auth_interface", default="auto", choices=list(AUTH_INTERFACES),
                         help="where to do the SAML sign-in: gateway, portal, or auto (probe gateway first)")
+        sp.add_argument("--debug", action="store_true", help="append each step to the debug log in $XDG_STATE_HOME")
 
     for name, fn, help_text in (
         ("status", cmd_status, "print the current state as JSON"),
@@ -1015,11 +1139,16 @@ def main(argv=None):
         ("forget", cmd_forget, "drop the stored session and the sign-in window's saved logins"),
         ("deps", cmd_deps, "report which dependencies are installed"),
         ("hip-report", cmd_hip_report, "show what the HIP report says about this machine"),
+        ("collect-logs", cmd_collect_logs, "write a scrubbed troubleshooting tarball (default: ~/Downloads)"),
     ):
         sp = sub.add_parser(name, help=help_text)
         common(sp)
+        if name == "collect-logs":
+            sp.add_argument("--output", default="", help="directory for the tarball")
         sp.set_defaults(fn=fn)
     args = p.parse_args(argv)
+    set_debug(args.debug or os.environ.get("OMARCHY_GP_DEBUG") == "1")
+    debug_log(" ".join(a for a in (argv if argv is not None else sys.argv[1:]) if a != "--debug"))
     args.fn(args)
 
 

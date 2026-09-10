@@ -342,6 +342,72 @@ class HipReportTests(unittest.TestCase):
         self.assertEqual(cmd[cmd.index("--client-os") + 1], "Linux")
 
 
+class LogBundleTests(unittest.TestCase):
+    def test_scrub_masks_cookie_values_in_every_shape(self):
+        text = (
+            "COOKIE='user=b@x.com&authcookie=abc123&portal=p'\n"
+            "vpn.secrets.cookie:deadbeefcafe\n"
+            "<prelogin-cookie>SECRETVALUE</prelogin-cookie>\n"
+            "<portal-userauthcookie>OTHERSECRET</portal-userauthcookie>\n"
+            "prelogin-cookie=abc&user=me\n"
+            "password: hunter2\n"
+        )
+        out = gp.scrub_secrets(text)
+        for secret in ("abc123", "deadbeefcafe", "SECRETVALUE", "OTHERSECRET", "hunter2"):
+            self.assertNotIn(secret, out)
+        self.assertNotIn("prelogin-cookie=abc", out)
+        self.assertIn("user=b@x.com", out)
+        self.assertIn("portal=p", out)
+
+    def test_scrub_leaves_ordinary_text_alone(self):
+        text = "phase=connected\nESP session established with server\nCookie policy unchanged\n"
+        self.assertEqual(gp.scrub_secrets(text), text)
+
+    def test_debug_log_writes_only_when_enabled(self):
+        with tempfile.TemporaryDirectory() as d, unittest.mock.patch.dict(os.environ, {"XDG_STATE_HOME": d}):
+            gp.set_debug(False)
+            gp.debug_log("silent")
+            self.assertFalse((pathlib.Path(d) / "omarchy-globalprotect" / "debug.log").exists())
+            gp.set_debug(True)
+            try:
+                gp.debug_log("hello world")
+            finally:
+                gp.set_debug(False)
+            log = (pathlib.Path(d) / "omarchy-globalprotect" / "debug.log").read_text()
+        self.assertIn("hello world", log)
+        self.assertRegex(log, r"^\d{4}-\d{2}-\d{2}T")
+
+    def test_debug_log_rotates_when_large(self):
+        with tempfile.TemporaryDirectory() as d, unittest.mock.patch.dict(os.environ, {"XDG_STATE_HOME": d}):
+            logdir = pathlib.Path(d) / "omarchy-globalprotect"
+            logdir.mkdir()
+            (logdir / "debug.log").write_text("x" * (gp.DEBUG_LOG_MAX + 1))
+            gp.set_debug(True)
+            try:
+                gp.debug_log("fresh")
+            finally:
+                gp.set_debug(False)
+            self.assertTrue((logdir / "debug.log.1").exists())
+            self.assertIn("fresh", (logdir / "debug.log").read_text())
+            self.assertLess((logdir / "debug.log").stat().st_size, 200)
+
+    def test_bundle_path_is_timestamped(self):
+        import datetime
+        when = datetime.datetime(2026, 9, 10, 12, 34, 56)
+        self.assertEqual(gp.bundle_path(pathlib.Path("/tmp/x"), when), pathlib.Path("/tmp/x/omarchy-globalprotect-logs-20260910-123456.tar.gz"))
+
+    def test_write_bundle_creates_private_tarball_with_members(self):
+        import tarfile
+        with tempfile.TemporaryDirectory() as d:
+            path = pathlib.Path(d) / "bundle.tar.gz"
+            gp.write_bundle(path, {"status.json": "{}", "journal.txt": "line\n"})
+            self.assertEqual(path.stat().st_mode & 0o777, 0o600)
+            with tarfile.open(path) as tar:
+                names = sorted(tar.getnames())
+                self.assertEqual(names, sorted(["omarchy-globalprotect-logs/journal.txt", "omarchy-globalprotect-logs/status.json"]))
+                self.assertEqual(tar.extractfile("omarchy-globalprotect-logs/journal.txt").read(), b"line\n")
+
+
 class ThemeColorTests(unittest.TestCase):
     def test_parses_minimal_toml(self):
         c = gp.parse_theme_colors('mode = "dark"\naccent = "#7d82d9"\nbackground = "#060B1E"\nforeground = "#ffcead"\n')

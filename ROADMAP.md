@@ -93,7 +93,7 @@ The tunnel survives the network, and you can see what it negotiated.
 - [x] Rediscover network (disconnect + reconnect with the stored session)
 - [x] Connection details: tunnel protocol (ESP/SSL), gateway IP, routes, DNS
 - [x] Host state view: what the HIP report says about this machine
-- [ ] Log bundle and a debug logging setting
+- [x] Log bundle and a debug logging setting
 
 ### v0.3 — Gateways
 
