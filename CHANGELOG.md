@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 1.0.0 — 2026-09-10
 
 - Every setting is now editable in the panel: *Reports as* (client OS), *Sign-in
   interface*, *Refresh (s)*, and *Pause (min)* join the rest; no more `shell.json`

@@ -137,7 +137,7 @@ Pick where you land.
 - [x] HIP notifications
 - [x] Welcome page
 
-### v1.0 — Parity
+### v1.0.0 — Parity (shipped 2026-09-10)
 
 Everything above stable, and the widget stands on its own.
 
