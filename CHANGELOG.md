@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.3.0 — 2026-09-10
 
 - *Gateways* section: fetch the portal's gateway list (`gateways --refresh`, `g` key),
   see priority and TLS latency for each, and click one to prefer it. *Best available*

@@ -95,7 +95,7 @@ The tunnel survives the network, and you can see what it negotiated.
 - [x] Host state view: what the HIP report says about this machine
 - [x] Log bundle and a debug logging setting
 
-### v0.3 — Gateways
+### v0.3.0 — Gateways (shipped 2026-09-10)
 
 Pick where you land.
 
