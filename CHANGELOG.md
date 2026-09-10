@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.7.0 — 2026-09-10
 
 - Portal-driven app settings: the gateway refresh also parses `agent-config` (connect
   method, tunnel MTU, SSL-only, rediscover/sign-out permissions, welcome page, refresh

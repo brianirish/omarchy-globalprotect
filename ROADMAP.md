@@ -127,7 +127,7 @@ Pick where you land.
 - [x] MTU override
 - [x] IPv6 addressing in status and panel
 
-### v0.7 — Portal-driven
+### v0.7.0 — Portal-driven (shipped 2026-09-10)
 
 - [x] Multiple portals
 - [x] Portal-driven app settings (`agent-config`)
