@@ -111,7 +111,7 @@ Pick where you land.
 - [x] Captive portal detection with notification delay
 - [x] Reconnect after suspend, with re-auth when the cookie expired
 
-### v0.5 — Sign-in options
+### v0.5.0 — Sign-in options (shipped 2026-09-10)
 
 - [x] Username/password (LDAP/RADIUS)
 - [x] MFA/OTP second prompts

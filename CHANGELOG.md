@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.5.0 — 2026-09-10
 
 - Username/password portals (LDAP/RADIUS): when prelogin offers no SAML, a themed
   credentials dialog uses the portal's own labels; *Remember* keeps the password in the
