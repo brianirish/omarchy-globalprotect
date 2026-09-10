@@ -1,0 +1,816 @@
+#!/usr/bin/env python3
+"""omarchy-globalprotect: GlobalProtect (SAML / Google SSO) for Omarchy.
+
+NetworkManager owns the tunnel. This tool does the unprivileged parts:
+portal prelogin, a WebKit sign-in window, `openconnect --authenticate`,
+and handing the resulting session to `nmcli connection up`.
+"""
+import argparse
+import base64
+import json
+import os
+import re
+import shlex
+import shutil
+import subprocess
+import sys
+import time
+import urllib.error
+import urllib.parse
+import urllib.request
+import xml.etree.ElementTree as ET
+from pathlib import Path
+
+APP = "omarchy-globalprotect"
+NM_CONNECTION = "GlobalProtect"
+CLIENT_OS = {"win": "Windows", "linux": "Linux", "mac": "Mac"}
+COOKIE_KINDS = ("prelogin-cookie", "portal-userauthcookie")
+SAML_FIELDS = COOKIE_KINDS + ("saml-username", "saml-auth-status")
+HIP_SCRIPTS = ("/usr/lib/openconnect/hipreport.sh", "/usr/libexec/openconnect/hipreport.sh")
+
+
+class PreloginError(Exception):
+    pass
+
+
+class AuthError(Exception):
+    pass
+
+
+class Cancelled(Exception):
+    pass
+
+
+# --------------------------------------------------------------------------- pure helpers
+
+def parse_prelogin(xml_text):
+    """Turn the portal's prelogin.esp XML into {"method": POST|REDIRECT, "request": str}."""
+    try:
+        root = ET.fromstring(xml_text)
+    except ET.ParseError as e:
+        raise PreloginError(f"Portal returned unreadable prelogin XML ({e})")
+    status = (root.findtext("status") or "").strip()
+    if status.lower() == "error":
+        raise PreloginError((root.findtext("msg") or "Portal rejected prelogin").strip())
+    method = (root.findtext("saml-auth-method") or "").strip().upper()
+    request = (root.findtext("saml-request") or "").strip()
+    if method not in ("POST", "REDIRECT") or not request:
+        raise PreloginError("Portal did not offer SAML login (is SSO enabled for this portal?)")
+    try:
+        decoded = base64.b64decode(request).decode("utf-8", "replace")
+    except (ValueError, TypeError) as e:
+        raise PreloginError(f"Portal sent an undecodable SAML request ({e})")
+    return {"method": method, "request": decoded}
+
+
+_COMMENT_RE = re.compile(r"<!--(.*?)-->", re.S)
+_TAG_RE = re.compile(r"<(saml-username|saml-auth-status|prelogin-cookie|portal-userauthcookie)>(.*?)</\1>", re.S)
+
+
+def extract_saml_result(headers, html):
+    """Collect SAML completion fields from HTTP headers and/or HTML comments. Headers win."""
+    out = {}
+    for name, value in (headers or {}).items():
+        key = str(name).lower()
+        if key in SAML_FIELDS and value:
+            out[key] = str(value).strip()
+    for comment in _COMMENT_RE.findall(html or ""):
+        for key, value in _TAG_RE.findall(comment):
+            if value.strip():
+                out.setdefault(key, value.strip())
+    return out
+
+
+def saml_result_complete(result):
+    return bool(result.get("saml-username")) and any(result.get(k) for k in COOKIE_KINDS)
+
+
+def choose_cookie(result):
+    for kind in COOKIE_KINDS:
+        if result.get(kind):
+            return kind, result[kind]
+    raise AuthError("SAML login finished without a cookie")
+
+
+def parse_authenticate_output(text):
+    """Parse the KEY='value' lines printed by `openconnect --authenticate`."""
+    out = {}
+    for line in text.splitlines():
+        m = re.match(r"^(COOKIE|HOST|CONNECT_URL|FINGERPRINT|RESOLVE)=(.*)$", line.strip())
+        if not m:
+            continue
+        raw = m.group(2)
+        try:
+            parts = shlex.split(raw) if raw else [""]
+        except ValueError:
+            parts = [raw]
+        out[m.group(1)] = parts[0] if parts else ""
+    return out
+
+
+def render_passwd_file(auth):
+    lines = [
+        f"vpn.secrets.cookie:{auth['COOKIE']}",
+        f"vpn.secrets.gateway:{auth['CONNECT_URL']}",
+        f"vpn.secrets.gwcert:{auth['FINGERPRINT']}",
+    ]
+    if auth.get("RESOLVE"):
+        lines.append(f"vpn.secrets.resolve:{auth['RESOLVE']}")
+    return "\n".join(lines) + "\n"
+
+
+def build_vpn_data(portal, hip, hip_script):
+    data = (
+        f"gateway={portal},protocol=gp,authtype=password,cookie-flags=2,gateway-flags=2,"
+        f"gwcert-flags=2,resolve-flags=2,enable_csd_trojan={'yes' if hip else 'no'}"
+    )
+    if hip and hip_script:
+        data += f",csd_wrapper={hip_script}"
+    return data
+
+
+def parse_nmcli_terse(text):
+    """Parse `nmcli -t` KEY:value lines, honouring the `\\:` escape."""
+    out = {}
+    for line in text.splitlines():
+        m = re.match(r"^((?:[^:\\]|\\.)+):(.*)$", line)
+        if not m:
+            continue
+        out[m.group(1).replace("\\:", ":")] = m.group(2).replace("\\:", ":")
+    return out
+
+
+def derive_state(conn_state, runfile, portal, deps):
+    if not portal:
+        return "unconfigured"
+    if not all(deps.get(k) for k in ("openconnect", "nmOpenconnect", "webkit")):
+        return "missing-deps"
+    if conn_state == "activated":
+        return "connected"
+    if runfile and runfile.get("alive"):
+        return "activating" if runfile.get("phase") == "activating" else "authenticating"
+    if conn_state == "activating":
+        return "activating"
+    return "disconnected"
+
+
+# --------------------------------------------------------------------------- filesystem state
+
+def _xdg(var, default):
+    return Path(os.environ.get(var) or default)
+
+
+def _private_dir(path):
+    path.mkdir(parents=True, exist_ok=True)
+    try:
+        path.chmod(0o700)
+    except OSError:
+        pass
+    return path
+
+
+def runtime_dir():
+    return _private_dir(_xdg("XDG_RUNTIME_DIR", f"/run/user/{os.getuid()}") / APP)
+
+
+def state_dir():
+    return _private_dir(_xdg("XDG_STATE_HOME", Path.home() / ".local/state") / APP)
+
+
+def data_dir():
+    return _private_dir(_xdg("XDG_DATA_HOME", Path.home() / ".local/share") / APP)
+
+
+def write_runfile(phase, pid=None):
+    (runtime_dir() / "connect.json").write_text(json.dumps({"pid": pid or os.getpid(), "phase": phase, "at": time.time()}))
+
+
+def clear_runfile():
+    try:
+        (runtime_dir() / "connect.json").unlink()
+    except FileNotFoundError:
+        pass
+
+
+def read_runfile():
+    try:
+        d = json.loads((runtime_dir() / "connect.json").read_text())
+    except (FileNotFoundError, ValueError):
+        return None
+    try:
+        os.kill(int(d.get("pid", 0)), 0)
+        d["alive"] = True
+    except (OSError, ValueError):
+        d["alive"] = False
+    return d
+
+
+def load_state():
+    try:
+        return json.loads((state_dir() / "state.json").read_text())
+    except (FileNotFoundError, ValueError):
+        return {}
+
+
+def save_state(**kv):
+    s = load_state()
+    s.update({k: v for k, v in kv.items() if v is not None})
+    p = state_dir() / "state.json"
+    fd = os.open(p, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w") as f:
+        f.write(json.dumps(s))
+    p.chmod(0o600)
+
+
+# --------------------------------------------------------------------------- system probes
+
+def check_deps():
+    return {
+        "openconnect": shutil.which("openconnect") is not None,
+        "nmOpenconnect": Path("/usr/lib/NetworkManager/VPN/nm-openconnect-service.name").exists(),
+        "webkit": Path("/usr/lib/girepository-1.0/WebKit2-4.1.typelib").exists(),
+    }
+
+
+def run(cmd, timeout=15, input_text=None, check=False):
+    return subprocess.run(cmd, capture_output=True, text=True, timeout=timeout, input=input_text, check=check)
+
+
+def nm_connection_state():
+    """State of the GlobalProtect NM profile, "inactive" when present but down, None when no profile exists."""
+    try:
+        r = run(["nmcli", "-t", "-f", "NAME,STATE", "connection", "show"])
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    for line in r.stdout.splitlines():
+        name, _, state = line.rpartition(":")
+        if name == NM_CONNECTION:
+            return state or "inactive"
+    return None
+
+
+def nm_connection_details():
+    try:
+        r = run(["nmcli", "-t", "connection", "show", NM_CONNECTION])
+    except (OSError, subprocess.TimeoutExpired):
+        return {}
+    return parse_nmcli_terse(r.stdout) if r.returncode == 0 else {}
+
+
+def iface_stats(iface):
+    try:
+        base = Path("/sys/class/net") / iface / "statistics"
+        return int((base / "rx_bytes").read_text()), int((base / "tx_bytes").read_text())
+    except (OSError, ValueError):
+        return 0, 0
+
+
+def find_iface_for_ip(ip):
+    if not ip:
+        return ""
+    try:
+        devs = json.loads(run(["ip", "-j", "addr"]).stdout)
+    except Exception:
+        return ""
+    for dev in devs:
+        for a in dev.get("addr_info", []):
+            if a.get("local") == ip:
+                return dev.get("ifname", "")
+    return ""
+
+
+def keyring_has(portal):  # replaced by the keyring section below
+    return False
+
+
+def status_json(portal):
+    deps = check_deps()
+    runfile = read_runfile()
+    state_file = load_state()
+    conn_state = nm_connection_state() if deps["nmOpenconnect"] else None
+    state = derive_state(conn_state, runfile, portal, deps)
+    out = {
+        "state": state,
+        "portal": portal,
+        "gateway": state_file.get("gateway", ""),
+        "username": state_file.get("username", ""),
+        "hasSession": keyring_has(portal) if portal else False,
+        "iface": "",
+        "ip4": "",
+        "since": 0,
+        "rxBytes": 0,
+        "txBytes": 0,
+        "detail": "",
+        "deps": deps,
+    }
+    if state == "connected":
+        d = nm_connection_details()
+        ip = d.get("IP4.ADDRESS[1]", "").split("/")[0]
+        iface = d.get("GENERAL.IP-IFACE") or find_iface_for_ip(ip)
+        rx, tx = iface_stats(iface) if iface else (0, 0)
+        try:
+            since = int(d.get("connection.timestamp") or 0)
+        except ValueError:
+            since = 0
+        out.update({"iface": iface, "ip4": ip, "since": since, "rxBytes": rx, "txBytes": tx})
+    elif runfile and runfile.get("alive"):
+        out["detail"] = runfile.get("phase", "")
+    return out
+
+
+# --------------------------------------------------------------------------- sign-in window
+
+def parse_theme_colors(text):
+    colors = {"background": "#101315", "foreground": "#cacccc", "accent": "#cacccc"}
+    for line in text.splitlines():
+        m = re.match(r'^\s*(background|foreground|accent)\s*=\s*"(#[0-9A-Fa-f]{6})"', line)
+        if m:
+            colors[m.group(1)] = m.group(2)
+    return colors
+
+
+def theme_colors():
+    p = _xdg("XDG_STATE_HOME", Path.home() / ".local/state") / "omarchy/current/theme/colors.toml"
+    try:
+        return parse_theme_colors(p.read_text())
+    except OSError:
+        return parse_theme_colors("")
+
+
+def run_sso_window(portal, method, request, timeout_s=300):
+    """Open the SAML page in a themed WebKit window; return the SAML result fields.
+
+    Raises Cancelled when the user closes the window, AuthError on timeout or load failure.
+    """
+    import signal
+    import gi
+    gi.require_version("Gtk", "3.0")
+    gi.require_version("Gdk", "3.0")
+    gi.require_version("WebKit2", "4.1")
+    gi.require_version("Soup", "3.0")
+    from gi.repository import GLib
+    GLib.set_prgname(APP)  # becomes the Wayland app_id; must precede Gtk init
+    from gi.repository import Gdk, Gtk, WebKit2
+
+    colors = theme_colors()
+    wk = _private_dir(data_dir() / "webkit")
+    manager = WebKit2.WebsiteDataManager(base_data_directory=str(wk / "data"), base_cache_directory=str(wk / "cache"))
+    manager.get_cookie_manager().set_persistent_storage(str(wk / "cookies.sqlite"), WebKit2.CookiePersistentStorage.SQLITE)
+    ctx = WebKit2.WebContext.new_with_website_data_manager(manager)
+    view = WebKit2.WebView.new_with_context(ctx)
+    outcome = {"result": {}, "error": None, "done": False, "destroyed": False}
+
+    win = Gtk.Window(title=f"Sign in · {portal}")
+    win.set_default_size(480, 720)
+    win.set_wmclass(APP, APP)
+
+    css = Gtk.CssProvider()
+    css.load_from_data(f"""
+      window, .gp-header {{ background-color: {colors['background']}; color: {colors['foreground']}; }}
+      label.gp-title {{ font-weight: bold; font-size: 13px; }}
+      label.gp-sub {{ opacity: 0.6; font-size: 11px; }}
+      progressbar trough {{ min-height: 2px; background-color: {colors['background']}; border: none; }}
+      progressbar progress {{ min-height: 2px; background-color: {colors['accent']}; border: none; }}
+    """.encode())
+    Gtk.StyleContext.add_provider_for_screen(Gdk.Screen.get_default(), css, Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION)
+
+    box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
+    header = Gtk.Box(spacing=10)
+    header.get_style_context().add_class("gp-header")
+    header.set_border_width(12)
+    labels = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=2)
+    title = Gtk.Label(label="Signing in with Google", xalign=0)
+    title.get_style_context().add_class("gp-title")
+    sub = Gtk.Label(label=portal, xalign=0)
+    sub.get_style_context().add_class("gp-sub")
+    labels.pack_start(title, False, False, 0)
+    labels.pack_start(sub, False, False, 0)
+    spinner = Gtk.Spinner()
+    header.pack_start(labels, True, True, 0)
+    header.pack_end(spinner, False, False, 0)
+    progress = Gtk.ProgressBar()
+    box.pack_start(header, False, False, 0)
+    box.pack_start(progress, False, False, 0)
+    box.pack_start(view, True, True, 0)
+    win.add(box)
+
+    def close_window():
+        if not outcome["destroyed"]:
+            outcome["destroyed"] = True
+            win.destroy()
+        return False
+
+    def finish(error=None):
+        if outcome["done"]:
+            return
+        outcome["done"] = True
+        outcome["error"] = error
+        spinner.stop()
+        if error is None:
+            title.set_text("Signed in")
+            sub.set_text(outcome["result"].get("saml-username") or portal)
+            GLib.timeout_add(600, close_window)
+        else:
+            GLib.idle_add(close_window)
+
+    def consider(fields):
+        if outcome["done"] or not fields:
+            return
+        for k, v in fields.items():
+            outcome["result"].setdefault(k, v)
+        if saml_result_complete(outcome["result"]):
+            finish()
+
+    def on_resource(_view, resource, _request):
+        def on_finished(res):
+            resp = res.get_response()
+            if not resp:
+                return
+            headers = {}
+            http_headers = resp.get_http_headers()
+            if http_headers is not None:
+                http_headers.foreach(lambda n, v: headers.__setitem__(n, v))
+            consider(extract_saml_result(headers, None))
+        resource.connect("finished", on_finished)
+
+    def on_js(v, res, *_):
+        try:
+            html = v.evaluate_javascript_finish(res).to_string()
+        except Exception:
+            return
+        consider(extract_saml_result(None, html))
+
+    def on_load_changed(_view, event):
+        loading = event != WebKit2.LoadEvent.FINISHED
+        progress.set_visible(loading)
+        if loading:
+            spinner.start()
+            return
+        spinner.stop()
+        view.evaluate_javascript("document.documentElement.outerHTML", -1, None, None, None, on_js, None)
+
+    def on_load_failed(_view, _event, uri, error):
+        # Navigations interrupted by a redirect surface as "cancelled"; that is normal during SSO.
+        if error.matches(WebKit2.NetworkError.quark(), WebKit2.NetworkError.CANCELLED):
+            return False
+        title.set_text("Could not load the sign-in page")
+        sub.set_text(error.message)
+        spinner.stop()
+        return False  # let WebKit render its error page; the user can close the window
+
+    def on_destroy(*_):
+        outcome["destroyed"] = True
+        if not outcome["done"]:
+            outcome["done"] = True
+            outcome["error"] = "Sign-in window closed"
+        Gtk.main_quit()
+
+    def on_timeout():
+        finish("Sign-in timed out")
+        return False
+
+    def on_term(*_):
+        finish("Sign-in interrupted")
+        return False
+
+    view.connect("resource-load-started", on_resource)
+    view.connect("load-changed", on_load_changed)
+    view.connect("load-failed", on_load_failed)
+    view.connect("notify::estimated-load-progress", lambda v, _p: progress.set_fraction(v.get_estimated_load_progress()))
+    win.connect("destroy", on_destroy)
+    GLib.timeout_add_seconds(timeout_s, on_timeout)
+    GLib.unix_signal_add(GLib.PRIORITY_HIGH, signal.SIGTERM, on_term)
+    GLib.unix_signal_add(GLib.PRIORITY_HIGH, signal.SIGINT, on_term)
+
+    if method == "REDIRECT":
+        view.load_uri(request)
+    else:
+        view.load_html(request, f"https://{portal}/")
+    win.show_all()
+    progress.set_visible(True)
+    spinner.start()
+    Gtk.main()
+
+    # WebKit creates the cookie jar 0644; the 0700 directory already guards it,
+    # but keep the file itself private too.
+    for name in ("cookies.sqlite", "cookies.sqlite-wal", "cookies.sqlite-shm"):
+        try:
+            (wk / name).chmod(0o600)
+        except OSError:
+            pass
+
+    if outcome["error"]:
+        if "closed" in outcome["error"] or "interrupted" in outcome["error"]:
+            raise Cancelled(outcome["error"])
+        raise AuthError(outcome["error"])
+    return outcome["result"]
+
+
+# --------------------------------------------------------------------------- portal + openconnect
+
+def prelogin(portal, client_os, timeout=20):
+    body = urllib.parse.urlencode({
+        "tmp": "tmp", "kerberos-support": "yes", "ipv6-support": "yes", "clientVer": "4100", "clientos": client_os,
+    }).encode()
+    req = urllib.request.Request(
+        f"https://{portal}/global-protect/prelogin.esp", data=body, method="POST",
+        headers={"User-Agent": "PAN GlobalProtect", "Content-Type": "application/x-www-form-urlencoded"},
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            return parse_prelogin(resp.read().decode("utf-8", "replace"))
+    except urllib.error.URLError as e:
+        raise PreloginError(f"Could not reach {portal}: {getattr(e, 'reason', e)}")
+    except OSError as e:
+        raise PreloginError(f"Could not reach {portal}: {e}")
+
+
+def authenticate_command(portal, cookie_kind, username, client_os, gateway, hip_script):
+    cmd = [
+        "openconnect", "--protocol=gp", "--authenticate", "--non-inter", f"--os={client_os}", f"--user={username}",
+        f"--usergroup=portal:{cookie_kind}", "--passwd-on-stdin",
+    ]
+    if gateway:
+        cmd.append(f"--authgroup={gateway}")
+    if hip_script:
+        cmd.append(f"--csd-wrapper={hip_script}")
+    cmd.append(portal)
+    return cmd
+
+
+def last_meaningful_line(text):
+    skip = ("Connected to", "SSL negotiation", "Connected to HTTPS", "Getting login form", "POST https://", "GET https://")
+    lines = [l.strip() for l in (text or "").splitlines() if l.strip() and not l.strip().startswith(skip)]
+    return lines[-1][:200] if lines else ""
+
+
+def authenticate(portal, cookie_kind, cookie, username, client_os, gateway, hip_script, timeout=60):
+    """Exchange a SAML cookie for a session cookie; the cookie travels over stdin only."""
+    try:
+        r = run(authenticate_command(portal, cookie_kind, username, client_os, gateway, hip_script), timeout=timeout, input_text=cookie + "\n")
+    except subprocess.TimeoutExpired:
+        raise AuthError("openconnect timed out talking to the portal")
+    except OSError as e:
+        raise AuthError(f"Could not run openconnect: {e}")
+    auth = parse_authenticate_output(r.stdout)
+    if r.returncode != 0 or not all(auth.get(k) for k in ("COOKIE", "CONNECT_URL", "FINGERPRINT")):
+        raise AuthError(last_meaningful_line(r.stderr) or "Portal login failed")
+    return auth
+
+
+def hip_script_path():
+    return next((p for p in HIP_SCRIPTS if Path(p).exists()), None)
+
+
+# --------------------------------------------------------------------------- keyring (secret-tool)
+
+def _keyring_attrs(portal):
+    return ["application", APP, "portal", portal, "kind", "portal-userauthcookie"]
+
+
+def keyring_store(portal, cookie):
+    try:
+        run(["secret-tool", "store", f"--label=GlobalProtect session ({portal})", *_keyring_attrs(portal)], input_text=cookie)
+    except (OSError, subprocess.TimeoutExpired):
+        pass
+
+
+def keyring_lookup(portal):
+    try:
+        r = run(["secret-tool", "lookup", *_keyring_attrs(portal)])
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    if r.returncode != 0:
+        return None
+    return r.stdout.strip() or None
+
+
+def keyring_has(portal):  # noqa: F811 — replaces the placeholder above
+    return keyring_lookup(portal) is not None
+
+
+def keyring_clear(portal):
+    try:
+        run(["secret-tool", "clear", "application", APP, "portal", portal])
+    except (OSError, subprocess.TimeoutExpired):
+        pass
+
+
+# --------------------------------------------------------------------------- NetworkManager
+
+def current_user():
+    user = os.environ.get("USER")
+    if user:
+        return user
+    try:
+        import pwd
+        return pwd.getpwuid(os.getuid()).pw_name
+    except (KeyError, ImportError):
+        return os.getlogin()
+
+
+def ensure_nm_profile(portal, hip, hip_script=None):
+    """Create or update the user-owned GlobalProtect NM profile. Idempotent."""
+    if hip and hip_script is None:
+        hip_script = hip_script_path()
+    data = build_vpn_data(portal, hip, hip_script)
+    user = current_user()
+    try:
+        if nm_connection_state() is None:
+            r = run(["nmcli", "connection", "add", "type", "vpn", "con-name", NM_CONNECTION, "ifname", "*", "vpn-type", "openconnect",
+                     "connection.permissions", f"user:{user}", "vpn.data", data], timeout=20)
+        else:
+            r = run(["nmcli", "connection", "modify", NM_CONNECTION, "connection.permissions", f"user:{user}", "vpn.data", data], timeout=20)
+    except (OSError, subprocess.TimeoutExpired) as e:
+        raise AuthError(f"NetworkManager profile setup failed: {e}")
+    if r.returncode != 0:
+        raise AuthError(f"NetworkManager profile setup failed: {last_meaningful_line(r.stderr)}")
+
+
+def nm_up(auth, timeout=60):
+    path = runtime_dir() / f"secrets.{os.getpid()}"
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    try:
+        with os.fdopen(fd, "w") as f:
+            f.write(render_passwd_file(auth))
+        r = run(["nmcli", "--wait", str(timeout), "connection", "up", NM_CONNECTION, "passwd-file", str(path)], timeout=timeout + 10)
+        if r.returncode != 0:
+            raise AuthError(last_meaningful_line(r.stderr) or "NetworkManager could not bring the tunnel up")
+    except subprocess.TimeoutExpired:
+        raise AuthError("NetworkManager took too long to bring the tunnel up")
+    finally:
+        try:
+            path.unlink()
+        except FileNotFoundError:
+            pass
+
+
+def nm_down():
+    try:
+        r = run(["nmcli", "connection", "down", NM_CONNECTION], timeout=30)
+    except (OSError, subprocess.TimeoutExpired) as e:
+        raise AuthError(f"Disconnect failed: {e}")
+    if r.returncode != 0 and "not an active connection" not in r.stderr and "unknown connection" not in r.stderr:
+        raise AuthError(last_meaningful_line(r.stderr) or "Disconnect failed")
+
+
+# --------------------------------------------------------------------------- subcommands
+
+def emit(phase):
+    print(f"phase={phase}", flush=True)
+    write_runfile(phase)
+
+
+def warn(msg):
+    print(f"warning={msg}", file=sys.stderr, flush=True)
+
+
+def fail(msg, code=1):
+    print(f"error={msg}", file=sys.stderr, flush=True)
+    clear_runfile()
+    sys.exit(code)
+
+
+def resolve_portal(args):
+    portal = (getattr(args, "portal", "") or load_state().get("portal") or "").strip()
+    portal = re.sub(r"^https?://", "", portal).rstrip("/")
+    return portal
+
+
+def sign_in(portal, client_os):
+    emit("signing-in")
+    pre = prelogin(portal, CLIENT_OS.get(client_os, "Windows"))
+    result = run_sso_window(portal, pre["method"], pre["request"])
+    kind, cookie = choose_cookie(result)
+    username = result["saml-username"]
+    if result.get("portal-userauthcookie"):
+        keyring_store(portal, result["portal-userauthcookie"])
+    save_state(username=username, portal=portal)
+    return kind, cookie, username
+
+
+def _install_term_handler():
+    import signal
+
+    def on_term(signum, _frame):
+        raise Cancelled("Interrupted")
+
+    signal.signal(signal.SIGTERM, on_term)
+
+
+def cmd_connect(args):
+    _install_term_handler()
+    portal = resolve_portal(args)
+    if not portal:
+        fail("No portal configured", 1)
+    deps = check_deps()
+    if not all(deps.values()):
+        fail("Missing dependencies: " + ", ".join(k for k, v in deps.items() if not v), 3)
+    try:
+        emit("preparing")
+        hip_script = hip_script_path() if args.hip else None
+        if args.hip and hip_script is None:
+            warn("HIP report requested but openconnect's hipreport.sh was not found; continuing without HIP")
+        use_hip = bool(args.hip and hip_script)
+        ensure_nm_profile(portal, use_hip, hip_script)
+        auth = None
+        username = load_state().get("username", "")
+        if not args.fresh and username:
+            cookie = keyring_lookup(portal)
+            if cookie:
+                emit("authenticating")
+                try:
+                    auth = authenticate(portal, "portal-userauthcookie", cookie, username, args.client_os, args.gateway, hip_script)
+                except AuthError:
+                    keyring_clear(portal)
+                    auth = None
+        if auth is None:
+            kind, cookie, username = sign_in(portal, args.client_os)
+            emit("authenticating")
+            auth = authenticate(portal, kind, cookie, username, args.client_os, args.gateway, hip_script)
+        save_state(gateway=urllib.parse.urlsplit(auth["CONNECT_URL"]).hostname or "", portal=portal)
+        emit("activating")
+        nm_up(auth)
+        emit("connected")
+        clear_runfile()
+    except Cancelled as e:
+        fail(str(e), 2)
+    except (PreloginError, AuthError) as e:
+        fail(str(e), 1)
+    except KeyboardInterrupt:
+        fail("Interrupted", 2)
+
+
+def cmd_login(args):
+    _install_term_handler()
+    portal = resolve_portal(args)
+    if not portal:
+        fail("No portal configured")
+    try:
+        sign_in(portal, args.client_os)
+        clear_runfile()
+        print("phase=signed-in", flush=True)
+    except Cancelled as e:
+        fail(str(e), 2)
+    except (PreloginError, AuthError) as e:
+        fail(str(e))
+    except KeyboardInterrupt:
+        fail("Interrupted", 2)
+
+
+def cmd_disconnect(args):
+    try:
+        nm_down()
+    except AuthError as e:
+        fail(str(e))
+
+
+def cmd_forget(args):
+    portal = resolve_portal(args)
+    if portal:
+        keyring_clear(portal)
+    shutil.rmtree(data_dir() / "webkit", ignore_errors=True)
+    s = load_state()
+    s.pop("username", None)
+    s.pop("gateway", None)
+    p = state_dir() / "state.json"
+    p.write_text(json.dumps(s))
+    p.chmod(0o600)
+
+
+def cmd_status(args):
+    print(json.dumps(status_json(resolve_portal(args))))
+
+
+def cmd_deps(args):
+    print(json.dumps(check_deps()))
+
+
+def main(argv=None):
+    p = argparse.ArgumentParser(prog=APP, description=__doc__.splitlines()[0])
+    sub = p.add_subparsers(dest="cmd", required=True)
+
+    def common(sp):
+        sp.add_argument("--portal", default="", help="portal hostname (defaults to the last used one)")
+        sp.add_argument("--gateway", default="", help="gateway name to select (openconnect --authgroup)")
+        sp.add_argument("--client-os", dest="client_os", default="win", choices=list(CLIENT_OS), help="OS to report to the portal")
+        sp.add_argument("--hip", action="store_true", help="submit openconnect's HIP report")
+        sp.add_argument("--fresh", action="store_true", help="ignore any stored session and sign in again")
+
+    for name, fn, help_text in (
+        ("status", cmd_status, "print the current state as JSON"),
+        ("connect", cmd_connect, "sign in if needed and bring the tunnel up"),
+        ("disconnect", cmd_disconnect, "bring the tunnel down"),
+        ("login", cmd_login, "run only the sign-in window and store the session"),
+        ("forget", cmd_forget, "drop the stored session and the sign-in window's saved logins"),
+        ("deps", cmd_deps, "report which dependencies are installed"),
+    ):
+        sp = sub.add_parser(name, help=help_text)
+        common(sp)
+        sp.set_defaults(fn=fn)
+    args = p.parse_args(argv)
+    args.fn(args)
+
+
+if __name__ == "__main__":
+    main()

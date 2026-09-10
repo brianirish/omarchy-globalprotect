@@ -1,0 +1,4 @@
+#!/usr/bin/env bash
+# Installs the NetworkManager OpenConnect plugin (pulls openconnect) via polkit.
+set -euo pipefail
+exec pkexec pacman -S --needed --noconfirm networkmanager-openconnect

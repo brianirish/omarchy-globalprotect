@@ -1,0 +1,26 @@
+{
+  "schemaVersion": 1,
+  "id": "brianirish.globalprotect",
+  "name": "GlobalProtect",
+  "version": "0.1.0",
+  "author": "Brian",
+  "license": "MIT",
+  "description": "GlobalProtect VPN with Google SSO: connect, watch, and manage the tunnel from the Omarchy bar.",
+  "kinds": ["bar-widget"],
+  "entryPoints": { "barWidget": "Panel.qml" },
+  "barWidget": {
+    "displayName": "GlobalProtect",
+    "description": "Connect to a GlobalProtect VPN through Google SSO. NetworkManager owns the tunnel.",
+    "category": "Network",
+    "allowMultiple": false,
+    "defaultSection": "right",
+    "defaults": { "portal": "", "gateway": "", "clientOs": "win", "hipReport": false, "refreshIntervalSec": 5 },
+    "schema": [
+      { "key": "portal", "type": "string", "label": "Portal host" },
+      { "key": "gateway", "type": "string", "label": "Gateway (optional)" },
+      { "key": "clientOs", "type": "string", "label": "Reported client OS (win, linux, mac)" },
+      { "key": "hipReport", "type": "boolean", "label": "Submit HIP report" },
+      { "key": "refreshIntervalSec", "type": "integer", "label": "Refresh interval (seconds)", "min": 2, "max": 120, "step": 1, "defaultValue": 5 }
+    ]
+  }
+}
