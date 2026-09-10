@@ -338,7 +338,12 @@ Panel {
 
             InfoRow {
               label: "Gateway"
-              value: gp.gatewayHost !== "" ? gp.gatewayHost : "—"
+              value: Model.gatewayText(gp.gatewayHost, gp.gatewayIp)
+            }
+
+            InfoRow {
+              label: "Tunnel"
+              value: Model.tunnelText(gp.protocol)
             }
 
             InfoRow {
@@ -355,6 +360,16 @@ Panel {
             InfoRow {
               label: "Connected for"
               value: gp.since > 0 ? Model.formatDuration(gpPanel.nowMs / 1000 - gp.since) : "—"
+            }
+
+            InfoRow {
+              label: "Routes"
+              value: Model.routesText(gp.routes, gp.fullTunnel)
+            }
+
+            InfoRow {
+              label: "DNS"
+              value: Model.dnsText(gp.dns, gp.searchDomains)
             }
 
             // Throughput sparkline

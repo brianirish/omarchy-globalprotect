@@ -41,6 +41,12 @@ Item {
   property var txHistory: []
   property string username: ""
   property bool hasSession: false
+  property string protocol: ""
+  property string gatewayIp: ""
+  property var routes: []
+  property bool fullTunnel: false
+  property var dns: []
+  property var searchDomains: []
   property var deps: ({ openconnect: false, nmOpenconnect: false, webkit: false })
   property string actionStatus: ""
   property string lastError: ""
@@ -91,6 +97,12 @@ Item {
     since = s.since
     username = s.username
     hasSession = s.hasSession
+    protocol = s.protocol
+    gatewayIp = s.gatewayIp
+    routes = s.routes
+    fullTunnel = s.fullTunnel
+    dns = s.dns
+    searchDomains = s.searchDomains
     deps = s.deps
     if (s.state === "connected") sample(s.rxBytes, s.txBytes)
     else resetSamples()

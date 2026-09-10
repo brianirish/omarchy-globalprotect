@@ -7,6 +7,9 @@
   same session.
 - *Rediscover network* (`n` key, panel button, `rediscover` IPC): drop the tunnel and
   reconnect through the stored session.
+- Connection details in the panel and in `status --json`: tunnel protocol (ESP over
+  UDP or SSL, detected from the socket to the gateway), gateway IP, pushed routes
+  (full or split), DNS servers and search domains.
 
 ## 0.1.0 — 2026-09-10
 

@@ -28,6 +28,12 @@ function normalizeStatus(raw) {
     since: Number(s.since) || 0,
     rxBytes: Number(s.rxBytes) || 0,
     txBytes: Number(s.txBytes) || 0,
+    protocol: s.protocol === "esp" || s.protocol === "ssl" ? s.protocol : "",
+    gatewayIp: String(s.gatewayIp || ""),
+    routes: Array.isArray(s.routes) ? s.routes.map(String) : [],
+    fullTunnel: s.fullTunnel === true,
+    dns: Array.isArray(s.dns) ? s.dns.map(String) : [],
+    searchDomains: Array.isArray(s.searchDomains) ? s.searchDomains.map(String) : [],
     detail: String(s.detail || ""),
     deps: {
       openconnect: deps.openconnect === true,
@@ -47,6 +53,33 @@ function stateText(state, portal) {
     case "error": return "Something went wrong"
     default: return "Disconnected"
   }
+}
+
+// Session rows: what the tunnel negotiated, in the official client's words.
+function tunnelText(protocol) {
+  if (protocol === "esp") return "IPSec · ESP over UDP"
+  if (protocol === "ssl") return "SSL · TCP 443"
+  return "—"
+}
+
+function gatewayText(host, ip) {
+  if (host === "" && ip === "") return "—"
+  if (host === "") return ip
+  if (ip === "" || ip === host) return host
+  return host + " (" + ip + ")"
+}
+
+function routesText(routes, fullTunnel) {
+  if (!routes || routes.length === 0) return "—"
+  if (fullTunnel) return "Full tunnel"
+  return "Split · " + routes.join(", ")
+}
+
+function dnsText(dns, domains) {
+  var parts = []
+  if (dns && dns.length > 0) parts.push(dns.join(", "))
+  if (domains && domains.length > 0) parts.push(domains.join(", "))
+  return parts.length > 0 ? parts.join(" · ") : "—"
 }
 
 function formatBytesPerSec(n) {

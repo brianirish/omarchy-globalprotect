@@ -194,6 +194,90 @@ class StatusJsonTests(unittest.TestCase):
         self.assertEqual(s["gateway"], "gw.example.com")
         self.assertTrue(s["hasSession"])
 
+    def test_connected_reports_tunnel_details(self):
+        details = (
+            "GENERAL.STATE:activated\nIP4.ADDRESS[1]:10.1.2.3/32\nconnection.timestamp:1757490000\n"
+            "IP4.ROUTE[1]:dst = 0.0.0.0/0, nh = 0.0.0.0, mt = 50\nIP4.DNS[1]:10.0.0.53\nIP4.DOMAIN[1]:corp.example.com\n"
+        )
+        with tempfile.TemporaryDirectory() as d, unittest.mock.patch.dict(os.environ, {"XDG_STATE_HOME": d, "XDG_RUNTIME_DIR": d}):
+            gp.save_state(gateway="gw.example.com", gatewayIp="68.111.1.18")
+            with unittest.mock.patch.object(gp, "check_deps", return_value={"openconnect": True, "nmOpenconnect": True, "webkit": True}), \
+                 unittest.mock.patch.object(gp, "nm_connection_state", return_value="activated"), \
+                 unittest.mock.patch.object(gp, "nm_connection_details", return_value=gp.parse_nmcli_terse(details)), \
+                 unittest.mock.patch.object(gp, "find_iface_for_ip", return_value="vpn0"), \
+                 unittest.mock.patch.object(gp, "iface_stats", return_value=(0, 0)), \
+                 unittest.mock.patch.object(gp, "socket_peers", return_value=[("udp", "68.111.1.18", 4501)]), \
+                 unittest.mock.patch.object(gp, "keyring_has", return_value=False):
+                s = gp.status_json("vpn.example.com")
+        self.assertEqual(s["protocol"], "esp")
+        self.assertEqual(s["gatewayIp"], "68.111.1.18")
+        self.assertEqual(s["routes"], ["0.0.0.0/0"])
+        self.assertTrue(s["fullTunnel"])
+        self.assertEqual(s["dns"], ["10.0.0.53"])
+        self.assertEqual(s["searchDomains"], ["corp.example.com"])
+
+    def test_unconfigured_has_empty_tunnel_details(self):
+        with tempfile.TemporaryDirectory() as d, unittest.mock.patch.dict(os.environ, {"XDG_STATE_HOME": d, "XDG_RUNTIME_DIR": d}):
+            with unittest.mock.patch.object(gp, "check_deps", return_value={"openconnect": True, "nmOpenconnect": True, "webkit": True}):
+                s = gp.status_json("")
+        self.assertEqual((s["protocol"], s["gatewayIp"], s["routes"], s["fullTunnel"], s["dns"], s["searchDomains"]), ("", "", [], False, [], []))
+
+
+class ConnectionDetailTests(unittest.TestCase):
+    SS = (
+        "udp ESTAB      0      960           192.168.68.65:54579     68.111.1.18:4501\n"
+        "udp ESTAB      0      0            192.168.250.17:58033   160.79.104.10:443\n"
+        "tcp ESTAB      0      0            192.168.250.17:41234   140.82.112.3:443\n"
+        "tcp LISTEN     0      128                 0.0.0.0:22           0.0.0.0:*\n"
+    )
+
+    def test_parse_ss_peers_keeps_established_peers(self):
+        peers = gp.parse_ss_peers(self.SS)
+        self.assertIn(("udp", "68.111.1.18", 4501), peers)
+        self.assertIn(("tcp", "140.82.112.3", 443), peers)
+        self.assertNotIn(("tcp", "0.0.0.0", 0), peers)
+        self.assertEqual(len(peers), 3)
+
+    def test_parse_ss_peers_handles_ipv6_brackets(self):
+        peers = gp.parse_ss_peers("tcp ESTAB 0 0 [2001:db8::1]:5000 [2001:db8::2]:443\n")
+        self.assertEqual(peers, [("tcp", "2001:db8::2", 443)])
+
+    def test_protocol_esp_when_udp_4501_to_gateway(self):
+        self.assertEqual(gp.detect_protocol(gp.parse_ss_peers(self.SS), "68.111.1.18"), "esp")
+
+    def test_protocol_ssl_when_only_tcp_443_to_gateway(self):
+        peers = [("tcp", "68.111.1.18", 443), ("udp", "1.2.3.4", 4501)]
+        self.assertEqual(gp.detect_protocol(peers, "68.111.1.18"), "ssl")
+
+    def test_protocol_unknown_without_matching_peer(self):
+        self.assertEqual(gp.detect_protocol([("tcp", "9.9.9.9", 443)], "68.111.1.18"), "")
+
+    def test_protocol_falls_back_to_any_esp_port_when_gateway_ip_unknown(self):
+        self.assertEqual(gp.detect_protocol(gp.parse_ss_peers(self.SS), ""), "esp")
+        self.assertEqual(gp.detect_protocol([("tcp", "9.9.9.9", 443)], ""), "")
+
+    DETAILS = gp.parse_nmcli_terse(
+        "IP4.ADDRESS[1]:192.168.250.17/32\n"
+        "IP4.ROUTE[1]:dst = 1.1.1.1/32, nh = 0.0.0.0, mt = 50\n"
+        "IP4.ROUTE[2]:dst = 0.0.0.0/0, nh = 0.0.0.0, mt = 50\n"
+        "IP4.DNS[1]:10.0.0.53\n"
+        "IP4.DNS[2]:10.0.0.54\n"
+        "IP4.DOMAIN[1]:corp.example.com\n"
+    )
+
+    def test_nm_list_orders_indexed_fields(self):
+        self.assertEqual(gp.nm_list(self.DETAILS, "IP4.DNS"), ["10.0.0.53", "10.0.0.54"])
+        self.assertEqual(gp.nm_list(self.DETAILS, "IP4.DOMAIN"), ["corp.example.com"])
+        self.assertEqual(gp.nm_list(self.DETAILS, "IP6.DNS"), [])
+
+    def test_nm_routes_extracts_destinations(self):
+        self.assertEqual(gp.nm_routes(self.DETAILS), ["1.1.1.1/32", "0.0.0.0/0"])
+
+    def test_full_tunnel_when_default_route_present(self):
+        self.assertTrue(gp.is_full_tunnel(["1.1.1.1/32", "0.0.0.0/0"]))
+        self.assertFalse(gp.is_full_tunnel(["10.0.0.0/8", "172.16.0.0/12"]))
+        self.assertFalse(gp.is_full_tunnel([]))
+
 
 class ThemeColorTests(unittest.TestCase):
     def test_parses_minimal_toml(self):

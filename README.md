@@ -7,8 +7,9 @@ no password prompts once installed.
 
 - **Bar icon** that shows the tunnel state at a glance: dimmed when off, a
   gentle pulse while connecting, a badge when something failed.
-- **Panel** with the connection switch, the gateway, your VPN address (click to
-  copy), time connected, and a live throughput sparkline.
+- **Panel** with the connection switch, the gateway, the tunnel protocol (IPSec/ESP
+  or SSL), your VPN address (click to copy), time connected, routes, DNS, and a
+  live throughput sparkline.
 - **Google stays signed in** inside the sign-in window, so reconnecting is
   usually a window that flashes and closes. When the portal hands back a
   reusable session cookie it is kept in your keyring and reused until it expires.
@@ -84,7 +85,7 @@ refuses user-private ones); Omarchy's wheel polkit rule lets you manage it
 without a prompt. The CLI is usable on its own:
 
 ```bash
-bin/omarchy-globalprotect status --json
+bin/omarchy-globalprotect status              # JSON
 bin/omarchy-globalprotect connect --portal vpn.example.com
 bin/omarchy-globalprotect disconnect
 bin/omarchy-globalprotect login       # sign in only, store the session

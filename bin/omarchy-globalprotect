@@ -12,6 +12,7 @@ import os
 import re
 import shlex
 import shutil
+import socket
 import subprocess
 import sys
 import time
@@ -31,6 +32,7 @@ AUTH_INTERFACES = ("auto", "portal", "gateway")
 # Some deployments require SAML at the gateway as well as (or instead of) the portal;
 # "auto" probes the gateway interface on the configured host first, then the portal.
 PRELOGIN_PATHS = {"portal": "global-protect/prelogin.esp", "gateway": "ssl-vpn/prelogin.esp"}
+ESP_PORT = 4501  # GlobalProtect ESP-over-UDP; the HTTPS tunnel fallback uses 443
 
 
 class PreloginError(Exception):
@@ -142,6 +144,57 @@ def parse_nmcli_terse(text):
             continue
         out[m.group(1).replace("\\:", ":")] = m.group(2).replace("\\:", ":")
     return out
+
+
+_SS_PEER_RE = re.compile(r"^\[?([^\]\s]+?)\]?:(\d+)$")
+
+
+def parse_ss_peers(text):
+    """(proto, peer_ip, peer_port) for every ESTAB socket in `ss -tunH` output."""
+    peers = []
+    for line in (text or "").splitlines():
+        f = line.split()
+        if len(f) < 6 or f[1] != "ESTAB":
+            continue
+        m = _SS_PEER_RE.match(f[5])
+        if m:
+            peers.append((f[0], m.group(1), int(m.group(2))))
+    return peers
+
+
+def detect_protocol(peers, gateway_ip):
+    """"esp" (IPSec over UDP), "ssl" (HTTPS tunnel), or "" when neither is visible."""
+    if gateway_ip:
+        if ("udp", gateway_ip, ESP_PORT) in peers:
+            return "esp"
+        if ("tcp", gateway_ip, 443) in peers:
+            return "ssl"
+        return ""
+    return "esp" if any(p[0] == "udp" and p[2] == ESP_PORT for p in peers) else ""
+
+
+def nm_list(details, prefix):
+    """Values of nmcli's indexed fields (IP4.DNS[1], IP4.DNS[2], ...) in index order."""
+    pat = re.compile(r"^" + re.escape(prefix) + r"\[(\d+)\]$")
+    items = []
+    for key, value in details.items():
+        m = pat.match(key)
+        if m and value:
+            items.append((int(m.group(1)), value))
+    return [v for _, v in sorted(items)]
+
+
+def nm_routes(details):
+    out = []
+    for entry in nm_list(details, "IP4.ROUTE"):
+        m = re.search(r"dst = ([^,\s]+)", entry)
+        if m:
+            out.append(m.group(1))
+    return out
+
+
+def is_full_tunnel(routes):
+    return any(r in ("0.0.0.0/0", "::/0") for r in routes)
 
 
 def derive_state(conn_state, runfile, portal, deps):
@@ -283,6 +336,27 @@ def find_iface_for_ip(ip):
     return ""
 
 
+def socket_peers():
+    try:
+        r = run(["ss", "-tunH"], timeout=5)
+    except (OSError, subprocess.TimeoutExpired):
+        return []
+    return parse_ss_peers(r.stdout) if r.returncode == 0 else []
+
+
+def resolve_host(host):
+    """First IPv4 (else IPv6) address of host, "" when it does not resolve."""
+    try:
+        infos = socket.getaddrinfo(host, 443, proto=socket.IPPROTO_TCP)
+    except (OSError, ValueError):
+        return ""
+    for family in (socket.AF_INET, socket.AF_INET6):
+        for info in infos:
+            if info[0] == family:
+                return info[4][0]
+    return ""
+
+
 def keyring_has(portal):  # replaced by the keyring section below
     return False
 
@@ -305,6 +379,12 @@ def status_json(portal):
         "since": 0,
         "rxBytes": 0,
         "txBytes": 0,
+        "protocol": "",
+        "gatewayIp": "",
+        "routes": [],
+        "fullTunnel": False,
+        "dns": [],
+        "searchDomains": [],
         "detail": "",
         "deps": deps,
     }
@@ -318,7 +398,17 @@ def status_json(portal):
             since = int(d.get("connection.timestamp") or 0)
         except ValueError:
             since = 0
-        out.update({"iface": iface, "ip4": ip, "since": since, "rxBytes": rx, "txBytes": tx})
+        routes = nm_routes(d)
+        peers = socket_peers()
+        gateway_ip = state_file.get("gatewayIp", "")
+        if not gateway_ip:  # state written before the IP was recorded: the ESP peer is the gateway
+            gateway_ip = next((p[1] for p in peers if p[0] == "udp" and p[2] == ESP_PORT), "")
+        out.update({
+            "iface": iface, "ip4": ip, "since": since, "rxBytes": rx, "txBytes": tx,
+            "protocol": detect_protocol(peers, gateway_ip), "gatewayIp": gateway_ip,
+            "routes": routes, "fullTunnel": is_full_tunnel(routes),
+            "dns": nm_list(d, "IP4.DNS"), "searchDomains": nm_list(d, "IP4.DOMAIN"),
+        })
     elif runfile and runfile.get("alive"):
         out["detail"] = runfile.get("phase", "")
     return out
@@ -776,7 +866,8 @@ def cmd_connect(args):
             kind, cookie, username, iface = sign_in(portal, args.client_os, args.auth_interface)
             emit("authenticating")
             auth = authenticate(portal, kind, cookie, username, args.client_os, args.gateway, hip_script, interface=iface)
-        save_state(gateway=urllib.parse.urlsplit(auth["CONNECT_URL"]).hostname or "", portal=portal)
+        gateway_host = urllib.parse.urlsplit(auth["CONNECT_URL"]).hostname or ""
+        save_state(gateway=gateway_host, gatewayIp=resolve_host(gateway_host) if gateway_host else "", portal=portal)
         emit("activating")
         nm_up(auth)
         emit("connected")
