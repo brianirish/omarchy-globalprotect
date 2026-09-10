@@ -104,7 +104,7 @@ Pick where you land.
 - [x] Preferred gateway
 - [x] Best Available: priority plus TLS latency probe
 
-### v0.4 — Always-On
+### v0.4.0 — Always-On (shipped 2026-09-10)
 
 - [x] User-logon connect method: connect at shell start and when connectivity returns
 - [x] Backoff and "pause for N minutes"

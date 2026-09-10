@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "id": "brianirish.globalprotect",
   "name": "GlobalProtect",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "author": "Brian",
   "license": "MIT",
   "description": "GlobalProtect VPN with Google SSO: connect, watch, and manage the tunnel from the Omarchy bar.",

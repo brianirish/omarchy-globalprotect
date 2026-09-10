@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.4.0 — 2026-09-10
 
 - *Always-On* connect method (`connectMethod: always-on`): connects when the shell
   starts and whenever NetworkManager reports full connectivity again; failures back off
