@@ -17,7 +17,13 @@ spec.loader.exec_module(gp)
 class PreloginTests(unittest.TestCase):
     def test_post_method_decodes_request(self):
         xml = "<prelogin-response><status>Success</status><saml-auth-method>POST</saml-auth-method><saml-request>PGh0bWw+PC9odG1sPg==</saml-request></prelogin-response>"
-        self.assertEqual(gp.parse_prelogin(xml), {"method": "POST", "request": "<html></html>"})
+        pre = gp.parse_prelogin(xml)
+        self.assertEqual((pre["method"], pre["request"], pre["defaultBrowser"]), ("POST", "<html></html>", False))
+
+    def test_saml_default_browser_flag(self):
+        xml = ("<prelogin-response><saml-auth-method>REDIRECT</saml-auth-method><saml-request>aHR0cHM6Ly9pZHAvc3Nv</saml-request>"
+               "<saml-default-browser>yes</saml-default-browser></prelogin-response>")
+        self.assertTrue(gp.parse_prelogin(xml)["defaultBrowser"])
 
     def test_redirect_method(self):
         xml = "<prelogin-response><saml-auth-method>REDIRECT</saml-auth-method><saml-request>aHR0cHM6Ly9pZHAvc3Nv</saml-request></prelogin-response>"
@@ -29,9 +35,16 @@ class PreloginTests(unittest.TestCase):
             gp.parse_prelogin(xml)
         self.assertIn("client certificate", str(cm.exception))
 
-    def test_missing_saml_raises(self):
-        with self.assertRaises(gp.PreloginError):
-            gp.parse_prelogin("<prelogin-response><status>Success</status></prelogin-response>")
+    def test_missing_saml_means_password_auth_with_labels(self):
+        xml = ("<prelogin-response><status>Success</status><authentication-message>Enter login credentials</authentication-message>"
+               "<username-label>Corp ID</username-label><password-label>Passcode</password-label></prelogin-response>")
+        pre = gp.parse_prelogin(xml)
+        self.assertEqual(pre["method"], "PASSWORD")
+        self.assertEqual((pre["usernameLabel"], pre["passwordLabel"], pre["message"]), ("Corp ID", "Passcode", "Enter login credentials"))
+
+    def test_missing_saml_and_labels_defaults_password_labels(self):
+        pre = gp.parse_prelogin("<prelogin-response><status>Success</status></prelogin-response>")
+        self.assertEqual((pre["method"], pre["usernameLabel"], pre["passwordLabel"]), ("PASSWORD", "Username", "Password"))
 
     def test_unparseable_xml_raises(self):
         with self.assertRaises(gp.PreloginError):
@@ -515,6 +528,107 @@ class PortalConfigTests(unittest.TestCase):
         self.assertEqual(gp.resolve_gateway_choice("a:443", state), "a:443")
         self.assertEqual(gp.resolve_gateway_choice("", state), "c")
         self.assertEqual(gp.resolve_gateway_choice("", {}), "")
+
+
+class SignInOptionTests(unittest.TestCase):
+    def test_authenticate_command_password_mode_has_no_cookie_kind(self):
+        cmd = gp.authenticate_command("p", None, "u", "win", "", None, interface="gateway")
+        self.assertIn("--usergroup=gateway", cmd)
+        self.assertNotIn("--usergroup=gateway:", " ".join(cmd))
+        self.assertIn("--passwd-on-stdin", cmd)
+
+    def test_authenticate_command_passes_proxy_and_certificate(self):
+        cmd = gp.authenticate_command("p", "prelogin-cookie", "u", "win", "", None, interface="gateway",
+                                      proxy="http://proxy.corp:3128", certificate="/c.pem", key="/k.pem")
+        self.assertIn("--proxy=http://proxy.corp:3128", cmd)
+        self.assertIn("--certificate=/c.pem", cmd)
+        self.assertIn("--sslkey=/k.pem", cmd)
+        self.assertEqual(cmd[-1], "p")
+
+    def test_authenticate_command_omits_options_when_empty(self):
+        cmd = gp.authenticate_command("p", "prelogin-cookie", "u", "win", "", None)
+        self.assertFalse(any(a.startswith(("--proxy", "--certificate", "--sslkey")) for a in cmd))
+
+    def test_vpn_data_carries_proxy_and_certificate(self):
+        data = gp.build_vpn_data("p", False, None, proxy="http://proxy.corp:3128", certificate="/c.pem", key="/k.pem")
+        self.assertIn("proxy=http://proxy.corp:3128", data)
+        self.assertIn("usercert=/c.pem", data)
+        self.assertIn("privkey=/k.pem", data)
+        self.assertNotIn("proxy", gp.build_vpn_data("p", False, None))
+
+    def test_prompt_pending_detects_an_unanswered_prompt(self):
+        self.assertEqual(gp.prompt_pending("POST https://gw/ssl-vpn/login.esp\nPassword:"), "Password:")
+        self.assertEqual(gp.prompt_pending("Challenge: Enter the code from your token\nResponse: "), "Response:")
+        self.assertEqual(gp.prompt_pending("Some log line\n"), "")
+        self.assertEqual(gp.prompt_pending(""), "")
+        self.assertEqual(gp.prompt_pending("COOKIE='abc'\nHOST='1.2.3.4'\n"), "")
+
+    def test_prompt_pending_ignores_openconnect_progress_lines(self):
+        self.assertEqual(gp.prompt_pending("Connected to 1.2.3.4:443\nSSL negotiation with gw\nConnected to HTTPS on gw with ciphersuite X\n"), "")
+
+    def test_parse_callback_uri_extracts_user_and_token(self):
+        r = gp.parse_callback_uri("globalprotectcallback:cas-as=1&un=b%40x.com&token=TOK123")
+        self.assertEqual(r, {"username": "b@x.com", "token": "TOK123"})
+
+    def test_parse_callback_uri_rejects_other_schemes(self):
+        with self.assertRaises(gp.AuthError):
+            gp.parse_callback_uri("https://example.com/?un=x&token=y")
+        with self.assertRaises(gp.AuthError):
+            gp.parse_callback_uri("globalprotectcallback:cas-as=1&un=x")
+
+    def test_credential_keyring_attrs_are_scoped_to_portal_and_user(self):
+        attrs = gp._credential_attrs("vpn.example.com", "b@x.com")
+        self.assertIn("application", attrs)
+        self.assertIn("vpn.example.com", attrs)
+        self.assertIn("b@x.com", attrs)
+        self.assertEqual(attrs[attrs.index("kind") + 1], "password")
+
+
+class InteractiveAuthTests(unittest.TestCase):
+    """authenticate_interactive drives openconnect through a pty: password first, any later prompt via the callback."""
+
+    FAKE = (
+        "#!/usr/bin/env python3\n"
+        "import sys\n"
+        "sys.stdout.write('POST https://gw/ssl-vpn/login.esp\\n'); sys.stdout.flush()\n"
+        "sys.stdout.write('Password:'); sys.stdout.flush()\n"
+        "pw = sys.stdin.readline().rstrip('\\n')\n"
+        "if pw != 'hunter2':\n"
+        "    sys.stdout.write('\\nLogin failed\\n'); sys.exit(1)\n"
+        "sys.stdout.write('\\nChallenge: Enter the code from your token\\nResponse: '); sys.stdout.flush()\n"
+        "code = sys.stdin.readline().rstrip('\\n')\n"
+        "if code != '123456':\n"
+        "    sys.stdout.write('\\nBad code\\n'); sys.exit(1)\n"
+        "sys.stdout.write(\"\\nCOOKIE='user=u&authcookie=abc'\\nHOST='1.2.3.4'\\nCONNECT_URL='https://gw/'\\nFINGERPRINT='pin-sha256:xyz'\\n\")\n"
+    )
+
+    def _fake(self, d):
+        path = pathlib.Path(d) / "openconnect"
+        path.write_text(self.FAKE)
+        path.chmod(0o755)
+        return str(path)
+
+    def test_answers_password_then_routes_challenge_to_callback(self):
+        seen = []
+        with tempfile.TemporaryDirectory() as d:
+            auth = gp.authenticate_interactive("gw", "u", "hunter2", "win", "", None, "gateway",
+                                               lambda prompt, context="": (seen.append(prompt), "123456")[1], openconnect_bin=self._fake(d), timeout=20)
+        self.assertEqual(auth["COOKIE"], "user=u&authcookie=abc")
+        self.assertEqual(auth["FINGERPRINT"], "pin-sha256:xyz")
+        self.assertEqual(seen, ["Response:"])
+
+    def test_wrong_password_raises_with_last_line(self):
+        with tempfile.TemporaryDirectory() as d:
+            with self.assertRaises(gp.AuthError) as cm:
+                gp.authenticate_interactive("gw", "u", "nope", "win", "", None, "gateway", lambda p, c="": "x", openconnect_bin=self._fake(d), timeout=20)
+        self.assertIn("Login failed", str(cm.exception))
+
+    def test_cancel_from_callback_propagates(self):
+        def cancel(prompt, context=""):
+            raise gp.Cancelled("Sign-in cancelled")
+        with tempfile.TemporaryDirectory() as d:
+            with self.assertRaises(gp.Cancelled):
+                gp.authenticate_interactive("gw", "u", "hunter2", "win", "", None, "gateway", cancel, openconnect_bin=self._fake(d), timeout=20)
 
 
 class ThemeColorTests(unittest.TestCase):

@@ -1,5 +1,19 @@
 # Changelog
 
+## Unreleased
+
+- Username/password portals (LDAP/RADIUS): when prelogin offers no SAML, a themed
+  credentials dialog uses the portal's own labels; *Remember* keeps the password in the
+  GNOME keyring. openconnect is driven through a pty, so any further prompt it relays
+  (one-time code, push approval, challenge) opens a dialog instead of failing.
+- System browser for SAML (`samlBrowser: system`, `--browser`): opens the sign-in in the
+  default browser, registers a `globalprotectcallback:` scheme handler, and waits for the
+  portal's callback (CAS `un`/`token` or base64 HTML).
+- Client certificate (`certificate`, `certificateKey`, `--certificate`, `--key`) for
+  prelogin, config fetch, openconnect, and the NM profile.
+- Proxy (`proxy`, `--proxy`) for prelogin, config fetch, openconnect, and the NM profile.
+- Settings gains text fields for proxy, certificate, and key, and a system-browser toggle.
+
 ## 0.4.0 — 2026-09-10
 
 - *Always-On* connect method (`connectMethod: always-on`): connects when the shell

@@ -27,7 +27,11 @@
       "authInterface": "auto",
       "debug": false,
       "connectMethod": "on-demand",
-      "pauseMinutes": 30
+      "pauseMinutes": 30,
+      "samlBrowser": "embedded",
+      "proxy": "",
+      "certificate": "",
+      "certificateKey": ""
     },
     "schema": [
       {
@@ -82,6 +86,26 @@
         "max": 1440,
         "step": 5,
         "defaultValue": 30
+      },
+      {
+        "key": "samlBrowser",
+        "type": "string",
+        "label": "SAML sign-in window (embedded, system)"
+      },
+      {
+        "key": "proxy",
+        "type": "string",
+        "label": "Proxy URL (optional)"
+      },
+      {
+        "key": "certificate",
+        "type": "string",
+        "label": "Client certificate file (optional)"
+      },
+      {
+        "key": "certificateKey",
+        "type": "string",
+        "label": "Client certificate key file (optional)"
       }
     ]
   }

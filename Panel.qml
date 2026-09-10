@@ -251,7 +251,7 @@ Panel {
     PanelKeyCatcher {
       id: keyCatcher
       anchors.fill: parent
-      blocked: gpPanel.forgetOpen || portalField.activeFocus
+      blocked: gpPanel.forgetOpen || portalField.activeFocus || proxyField.activeFocus || certField.activeFocus || keyField.activeFocus
       onMoveRequested: function(dx, dy) {
         if (!gpPanel.cursorActive) { gpPanel.cursorActive = true; return }
         if (dy !== 0) gpPanel.moveCursor(dy)
@@ -800,6 +800,22 @@ Panel {
 
             Toggle {
               width: parent.width
+              label: "System browser for SAML"
+              description: gp.systemBrowser
+                ? "Sign-in opens in your default browser; the portal hands the session back through a globalprotectcallback: link"
+                : "Sign in inside the widget's own window (recommended). Switch on if your portal only supports the default-browser flow"
+              checked: gp.systemBrowser
+              foreground: gpPanel.foreground
+              fontFamily: gpPanel.fontFamily
+              onClicked: gpPanel.saveSetting("samlBrowser", gp.systemBrowser ? "embedded" : "system")
+            }
+
+            SettingField { id: proxyField; label: "Proxy"; placeholder: "http://proxy.example.com:3128"; settingKey: "proxy"; current: gp.proxy }
+            SettingField { id: certField; label: "Certificate"; placeholder: "/path/to/client.pem"; settingKey: "certificate"; current: gp.certificate }
+            SettingField { id: keyField; label: "Key"; placeholder: "/path/to/client.key (if separate)"; settingKey: "certificateKey"; current: gp.certificateKey }
+
+            Toggle {
+              width: parent.width
               label: "Debug logging"
               description: "Record each connect step in ~/.local/state/omarchy-globalprotect/debug.log"
               checked: gp.debug
@@ -862,6 +878,45 @@ Panel {
     visible: opacity > 0.01
     opacity: shown ? 1 : 0
     Behavior on opacity { NumberAnimation { duration: 160; easing.type: Easing.OutCubic } }
+  }
+
+  // One labelled text field bound to a settings key; saves on Enter or focus loss.
+  component SettingField: Row {
+    id: settingField
+    property string label: ""
+    property string placeholder: ""
+    property string settingKey: ""
+    property string current: ""
+    property alias activeFocus: field.activeFocus
+    width: parent ? parent.width : implicitWidth
+    spacing: Style.space(8)
+
+    Text {
+      textFormat: Text.PlainText
+      text: settingField.label
+      color: gpPanel.dim
+      font.family: gpPanel.fontFamily
+      font.pixelSize: Style.font.bodySmall
+      anchors.verticalCenter: parent.verticalCenter
+      width: Style.space(80)
+      elide: Text.ElideRight
+    }
+
+    TextField {
+      id: field
+      width: parent.width - Style.space(80) - parent.spacing
+      foreground: gpPanel.foreground
+      placeholderText: settingField.placeholder
+      text: settingField.current
+      verticalPadding: Style.space(4)
+      onEditingFinished: {
+        var v = text.trim()
+        if (v !== settingField.current) gpPanel.saveSetting(settingField.settingKey, v)
+      }
+      Keys.onPressed: function(event) {
+        if (event.key === Qt.Key_Escape) { keyCatcher.forceActiveFocus(); event.accepted = true }
+      }
+    }
   }
 
   component GatewayRow: CursorSurface {

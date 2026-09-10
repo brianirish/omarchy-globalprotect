@@ -113,11 +113,11 @@ Pick where you land.
 
 ### v0.5 — Sign-in options
 
-- [ ] Username/password (LDAP/RADIUS)
-- [ ] MFA/OTP second prompts
-- [ ] Client certificate authentication
-- [ ] Default system browser for SAML (`globalprotectcallback` handler)
-- [ ] Proxy support
+- [x] Username/password (LDAP/RADIUS)
+- [x] MFA/OTP second prompts
+- [x] Client certificate authentication
+- [x] Default system browser for SAML (`globalprotectcallback` handler)
+- [x] Proxy support
 
 ### v0.6 — Network
 

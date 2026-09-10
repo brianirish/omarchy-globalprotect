@@ -1,7 +1,8 @@
 # Omarchy GlobalProtect
 
 A native [Omarchy](https://omarchy.org) bar widget for Palo Alto GlobalProtect
-VPNs that use Google (SAML) single sign-on. One switch in the bar, a themed
+VPNs, built for Google (SAML) single sign-on and also happy with plain
+username/password portals, one-time-code prompts, and client certificates. One switch in the bar, a themed
 Google sign-in window, and NetworkManager owning the tunnel — no root helper,
 no password prompts once installed.
 
@@ -71,6 +72,19 @@ If the portal refuses the connection, check the panel's settings section:
   nftables, and DNF).
 - **Reported client OS** (`clientOs` in `shell.json`, default `win`): many portals
   only allow Windows and macOS clients. Set it to `linux` if yours accepts Linux.
+- **Username/password portals**: when the portal offers no SAML, a themed prompt asks
+  for the credentials the portal labels (LDAP/RADIUS). Tick *Remember* to keep the
+  password in the GNOME keyring; a wrong stored password is dropped and asked again.
+  Any second prompt openconnect relays (one-time code, push approval, challenge) opens
+  the same kind of dialog.
+- **System browser for SAML** (`samlBrowser: system`): the sign-in opens in your default
+  browser and the portal returns the session through a `globalprotectcallback:` link.
+  The widget registers itself as the handler for that scheme. Only works when the portal
+  is configured for the default-browser flow; the embedded window is the safe default.
+- **Client certificate** (`certificate`, `certificateKey`): used for prelogin, the portal
+  config fetch, `openconnect`, and the NetworkManager profile (`usercert`/`privkey`).
+- **Proxy** (`proxy`): an `http://host:port` URL used for prelogin, the config fetch,
+  `openconnect`, and the tunnel.
 - **Connect method** (`connectMethod`: `on-demand` or `always-on`, and `pauseMinutes`):
   the *Always-On* toggle in the panel. Turning the switch off while Always-On pauses it
   for `pauseMinutes`; cancelling the sign-in window does the same.
@@ -115,14 +129,18 @@ Where things live:
 |------|-------|
 | Portal, gateway, HIP, client OS, connect method settings | this widget's entry in `~/.config/omarchy/shell.json` |
 | Google session (WebKit website data) | `~/.local/share/omarchy-globalprotect/webkit/` (0700) |
-| Reusable portal session cookie | GNOME keyring, `application=omarchy-globalprotect` |
+| Reusable portal session cookie, remembered password | GNOME keyring, `application=omarchy-globalprotect` |
+| System-browser callback handler | `~/.local/share/applications/omarchy-globalprotect-callback.desktop` |
 | Last gateway / username / cached gateway list | `~/.local/state/omarchy-globalprotect/state.json` |
 | NetworkManager profile | `nmcli connection show GlobalProtect` |
 
 ## Troubleshooting
 
-- **"Portal did not offer SAML login"** — the portal is not configured for SSO
-  with the reported client OS. Try `clientOs: "linux"` or `"mac"` in `shell.json`.
+- **A username/password prompt appears instead of Google** — the portal offered no
+  SAML for the reported client OS. If it should have, try `clientOs: "linux"` or `"mac"`.
+- **System browser mode never comes back** — the portal is not configured for the
+  default-browser flow (it must redirect to `globalprotectcallback:`); switch back to
+  the embedded window.
 - **Signed in, but the tunnel fails with a HIP or "host check" message** — turn on
   *HIP report* in the panel.
 - **Signed in, then "User input required in non-interactive mode"** — the gateway

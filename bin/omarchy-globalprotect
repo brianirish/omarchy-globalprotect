@@ -74,13 +74,23 @@ def parse_prelogin(xml_text):
         raise PreloginError((root.findtext("msg") or "Portal rejected prelogin").strip())
     method = (root.findtext("saml-auth-method") or "").strip().upper()
     request = (root.findtext("saml-request") or "").strip()
-    if method not in ("POST", "REDIRECT") or not request:
-        raise PreloginError("Portal did not offer SAML login (is SSO enabled for this portal?)")
-    try:
-        decoded = base64.b64decode(request).decode("utf-8", "replace")
-    except (ValueError, TypeError) as e:
-        raise PreloginError(f"Portal sent an undecodable SAML request ({e})")
-    return {"method": method, "request": decoded}
+    if method in ("POST", "REDIRECT") and request:
+        try:
+            decoded = base64.b64decode(request).decode("utf-8", "replace")
+        except (ValueError, TypeError) as e:
+            raise PreloginError(f"Portal sent an undecodable SAML request ({e})")
+        return {"method": method, "request": decoded,
+                "defaultBrowser": (root.findtext("saml-default-browser") or "").strip().lower() == "yes"}
+    if method or request:
+        raise PreloginError("Portal sent an unusable SAML prelogin (method or request missing)")
+    # No SAML: the portal wants a username and password (LDAP/RADIUS/local), possibly with a challenge later.
+    return {
+        "method": "PASSWORD",
+        "usernameLabel": (root.findtext("username-label") or "").strip() or "Username",
+        "passwordLabel": (root.findtext("password-label") or "").strip() or "Password",
+        "message": (root.findtext("authentication-message") or "").strip(),
+        "region": (root.findtext("region") or "").strip(),
+    }
 
 
 _COMMENT_RE = re.compile(r"<!--(.*?)-->", re.S)
@@ -139,13 +149,19 @@ def render_passwd_file(auth):
     return "\n".join(lines) + "\n"
 
 
-def build_vpn_data(portal, hip, hip_script):
+def build_vpn_data(portal, hip, hip_script, proxy="", certificate="", key=""):
     data = (
         f"gateway={portal},protocol=gp,authtype=password,cookie-flags=2,gateway-flags=2,"
         f"gwcert-flags=2,resolve-flags=2,enable_csd_trojan={'yes' if hip else 'no'}"
     )
     if hip and hip_script:
         data += f",csd_wrapper={hip_script}"
+    if proxy:
+        data += f",proxy={proxy}"
+    if certificate:
+        data += f",usercert={certificate}"
+    if key:
+        data += f",privkey={key}"
     return data
 
 
@@ -240,6 +256,55 @@ def write_bundle(path, members):
     path.chmod(0o600)
 
 
+OPTS = {"proxy": "", "certificate": "", "key": "", "browser": False, "fresh": False}
+
+
+def set_options(args):
+    """Per-invocation options every network step consults (proxy, client certificate, browser mode)."""
+    OPTS.update(
+        proxy=(getattr(args, "proxy", "") or "").strip(),
+        certificate=(getattr(args, "certificate", "") or "").strip(),
+        key=(getattr(args, "key", "") or "").strip(),
+        browser=bool(getattr(args, "browser", False)),
+        fresh=bool(getattr(args, "fresh", False)),
+    )
+
+
+def prompt_pending(text):
+    """The prompt openconnect is waiting on ("Password:", "Response:"), or "" when the output ends with a newline."""
+    tail = (text or "").rsplit("\n", 1)[-1]
+    m = re.match(r"^\s*(.*?\S):\s*$", tail)
+    return f"{m.group(1)}:" if m else ""
+
+
+CALLBACK_SCHEME = "globalprotectcallback:"
+
+
+def parse_callback_uri(uri):
+    """The system-browser flow's return trip: CAS (un + token) or a base64 HTML page with the SAML comments."""
+    text = str(uri or "").strip()
+    if not text.lower().startswith(CALLBACK_SCHEME):
+        raise AuthError("Not a GlobalProtect sign-in callback")
+    payload = text[len(CALLBACK_SCHEME):]
+    if "cas-as" in payload:
+        q = urllib.parse.parse_qs(payload)
+        if "un" not in q or "token" not in q:
+            q = urllib.parse.parse_qs(urllib.parse.unquote(payload))
+        username, token = q.get("un", [""])[0], q.get("token", [""])[0]
+        if not username or not token:
+            raise AuthError("The sign-in callback is missing the user or token")
+        return {"username": username, "token": token}
+    try:
+        html = base64.b64decode(payload + "=" * (-len(payload) % 4)).decode("utf-8", "replace")
+    except (ValueError, TypeError):
+        raise AuthError("The sign-in callback could not be decoded")
+    result = extract_saml_result({}, html)
+    token = result.get("prelogin-cookie") or result.get("portal-userauthcookie")
+    if not result.get("saml-username") or not token:
+        raise AuthError("The sign-in callback carried no session")
+    return {"username": result["saml-username"], "token": token}
+
+
 def gateway_host(name):
     """The host part of a portal gateway entry name ("gw.example.com:443" -> "gw.example.com")."""
     return re.sub(r":\d+$", "", str(name or "").strip())
@@ -288,14 +353,16 @@ def parse_portal_config(xml_text):
     }
 
 
-def portal_config_body(portal, username, prelogin_cookie, client_os, hostname):
-    """The getconfig.esp form openconnect sends after a SAML prelogin (user + prelogin-cookie, no passwd)."""
+def portal_config_body(portal, username, prelogin_cookie, client_os, hostname, password=""):
+    """The getconfig.esp form openconnect sends: user + prelogin-cookie after SAML, or user + passwd."""
     os_name = CLIENT_OS.get(client_os, "Windows")
-    return urllib.parse.urlencode([
+    fields = [
         ("jnlpReady", "jnlpReady"), ("ok", "Login"), ("direct", "yes"), ("clientVer", "4100"), ("prot", "https:"),
         ("internal", "no"), ("ipv6-support", "yes"), ("clientos", os_name), ("os-version", OS_VERSIONS[os_name]),
-        ("server", portal), ("computer", hostname), ("user", username), ("prelogin-cookie", prelogin_cookie),
-    ])
+        ("server", portal), ("computer", hostname), ("user", username),
+    ]
+    fields.append(("passwd", password) if password else ("prelogin-cookie", prelogin_cookie))
+    return urllib.parse.urlencode(fields)
 
 
 def best_gateway(gateways, latencies):
@@ -567,14 +634,14 @@ def resolve_host(host):
     return ""
 
 
-def fetch_portal_config(portal, username, prelogin_cookie, client_os, timeout=30):
-    body = portal_config_body(portal, username, prelogin_cookie, client_os, socket.gethostname()).encode()
+def fetch_portal_config(portal, username, prelogin_cookie, client_os, timeout=30, password=""):
+    body = portal_config_body(portal, username, prelogin_cookie, client_os, socket.gethostname(), password=password).encode()
     url = f"https://{portal}/global-protect/getconfig.esp"
     req = urllib.request.Request(url, data=body, method="POST",
                                  headers={"User-Agent": "PAN GlobalProtect", "Content-Type": "application/x-www-form-urlencoded"})
     debug_log(f"portal getconfig POST {url} user={username}")
     try:
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
+        with http_opener().open(req, timeout=timeout) as resp:
             cfg = parse_portal_config(resp.read().decode("utf-8", "replace"))
     except urllib.error.HTTPError as e:
         raise PortalConfigError(f"Portal refused the config request (HTTP {e.code})")
@@ -682,6 +749,197 @@ def theme_colors():
         return parse_theme_colors(p.read_text())
     except OSError:
         return parse_theme_colors("")
+
+
+def _gtk():
+    """GTK 3 with the Omarchy theme applied; shared by the small dialogs."""
+    import warnings
+    import gi
+    warnings.filterwarnings("ignore", category=DeprecationWarning)
+    gi.require_version("Gtk", "3.0")
+    gi.require_version("Gdk", "3.0")
+    from gi.repository import GLib
+    GLib.set_prgname(APP)
+    from gi.repository import Gdk, Gtk
+    colors = theme_colors()
+    css = Gtk.CssProvider()
+    css.load_from_data(f"""
+      window, dialog, .gp-header {{ background-color: {colors['background']}; color: {colors['foreground']}; }}
+      label {{ color: {colors['foreground']}; }}
+      label.gp-title {{ font-weight: bold; font-size: 13px; }}
+      label.gp-sub {{ opacity: 0.6; font-size: 11px; }}
+      entry {{ background-color: {colors['background']}; color: {colors['foreground']}; border: 1px solid {colors['accent']}; border-radius: 4px; padding: 6px; caret-color: {colors['foreground']}; }}
+      button {{ background-color: {colors['background']}; color: {colors['foreground']}; border: 1px solid {colors['accent']}; border-radius: 4px; padding: 4px 12px; }}
+      button.suggested-action {{ background-color: {colors['accent']}; color: {colors['background']}; }}
+      checkbutton {{ color: {colors['foreground']}; }}
+    """.encode())
+    Gtk.StyleContext.add_provider_for_screen(Gdk.Screen.get_default(), css, Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION)
+    return Gtk
+
+
+def _dialog(Gtk, host, title_text, sub_text=""):
+    dlg = Gtk.Dialog(title=f"Sign in · {host}")
+    dlg.set_wmclass(APP, APP)
+    dlg.set_default_size(420, -1)
+    dlg.set_border_width(12)
+    dlg.add_button("Cancel", Gtk.ResponseType.CANCEL)
+    ok = dlg.add_button("Continue", Gtk.ResponseType.OK)
+    ok.get_style_context().add_class("suggested-action")
+    dlg.set_default_response(Gtk.ResponseType.OK)
+    box = dlg.get_content_area()
+    box.set_spacing(8)
+    title = Gtk.Label(label=title_text, xalign=0)
+    title.get_style_context().add_class("gp-title")
+    title.set_line_wrap(True)
+    box.pack_start(title, False, False, 0)
+    if sub_text:
+        sub = Gtk.Label(label=sub_text, xalign=0)
+        sub.get_style_context().add_class("gp-sub")
+        sub.set_line_wrap(True)
+        box.pack_start(sub, False, False, 0)
+    return dlg, box
+
+
+def _run_dialog(Gtk, dlg):
+    dlg.show_all()
+    resp = dlg.run()
+    dlg.destroy()
+    while Gtk.events_pending():
+        Gtk.main_iteration()
+    return resp == Gtk.ResponseType.OK
+
+
+def run_password_dialog(host, labels, message, username="", remember=False):
+    """Username/password prompt with the portal's own labels. Returns (username, password, remember)."""
+    Gtk = _gtk()
+    dlg, box = _dialog(Gtk, host, message or f"Sign in to {host}", host if message else "")
+    grid = Gtk.Grid(column_spacing=8, row_spacing=6)
+    user_entry = Gtk.Entry(text=username)
+    user_entry.set_hexpand(True)
+    user_entry.set_activates_default(True)
+    pass_entry = Gtk.Entry(visibility=False)
+    pass_entry.set_hexpand(True)
+    pass_entry.set_activates_default(True)
+    pass_entry.set_input_purpose(Gtk.InputPurpose.PASSWORD)
+    grid.attach(Gtk.Label(label=labels.get("usernameLabel", "Username"), xalign=0), 0, 0, 1, 1)
+    grid.attach(user_entry, 1, 0, 1, 1)
+    grid.attach(Gtk.Label(label=labels.get("passwordLabel", "Password"), xalign=0), 0, 1, 1, 1)
+    grid.attach(pass_entry, 1, 1, 1, 1)
+    box.pack_start(grid, False, False, 0)
+    remember_check = Gtk.CheckButton(label="Remember the password in the keyring")
+    remember_check.set_active(remember)
+    box.pack_start(remember_check, False, False, 0)
+    dlg.show_all()
+    (pass_entry if username else user_entry).grab_focus()
+    ok = _run_dialog(Gtk, dlg)
+    u, pw, keep = user_entry.get_text().strip(), pass_entry.get_text(), remember_check.get_active()
+    if not ok or not u or not pw:
+        raise Cancelled("Sign-in cancelled")
+    return u, pw, keep
+
+
+def run_prompt_dialog(host, prompt, context=""):
+    """One answer for whatever openconnect asked next (one-time code, push approval, challenge)."""
+    Gtk = _gtk()
+    dlg, box = _dialog(Gtk, host, prompt.rstrip(":"), context)
+    entry = Gtk.Entry()
+    entry.set_hexpand(True)
+    entry.set_activates_default(True)
+    low = prompt.lower()
+    if "pass" in low or "pin" in low:
+        entry.set_visibility(False)
+        entry.set_input_purpose(Gtk.InputPurpose.PASSWORD)
+    box.pack_start(entry, False, False, 0)
+    dlg.show_all()
+    entry.grab_focus()
+    ok = _run_dialog(Gtk, dlg)
+    text = entry.get_text()
+    if not ok:
+        raise Cancelled("Sign-in cancelled")
+    return text
+
+
+CALLBACK_DESKTOP = "omarchy-globalprotect-callback.desktop"
+
+
+def ensure_callback_handler():
+    """Register this CLI as the handler for globalprotectcallback: links (idempotent)."""
+    apps = _xdg("XDG_DATA_HOME", Path.home() / ".local/share") / "applications"
+    apps.mkdir(parents=True, exist_ok=True)
+    exe = str(Path(sys.argv[0]).resolve())
+    content = ("[Desktop Entry]\nType=Application\nName=GlobalProtect sign-in callback\n"
+               f"Exec={shlex.quote(exe)} callback %u\nNoDisplay=true\nTerminal=false\n"
+               "MimeType=x-scheme-handler/globalprotectcallback;\n")
+    desktop = apps / CALLBACK_DESKTOP
+    try:
+        if not desktop.exists() or desktop.read_text() != content:
+            desktop.write_text(content)
+    except OSError as e:
+        raise AuthError(f"Could not register the browser callback handler: {e}")
+    for cmd in (["xdg-mime", "default", CALLBACK_DESKTOP, "x-scheme-handler/globalprotectcallback"],
+                ["update-desktop-database", str(apps)]):
+        try:
+            run(cmd, timeout=10)
+        except (OSError, subprocess.TimeoutExpired):
+            pass
+
+
+def callback_fifo():
+    return runtime_dir() / "callback.fifo"
+
+
+def wait_for_callback(timeout):
+    """Block until the `callback` subcommand (launched by the browser) writes the callback URI."""
+    import select
+    import stat
+    path = callback_fifo()
+    try:
+        if path.exists() and not stat.S_ISFIFO(path.stat().st_mode):
+            path.unlink()
+        if not path.exists():
+            os.mkfifo(path, 0o600)
+    except OSError as e:
+        raise AuthError(f"Could not create the callback pipe: {e}")
+    fd = os.open(path, os.O_RDWR | os.O_NONBLOCK)  # O_RDWR: no spurious EOF while no writer is connected
+    data = b""
+    try:
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline and b"\n" not in data:
+            ready, _, _ = select.select([fd], [], [], 0.5)
+            if ready:
+                try:
+                    data += os.read(fd, 65536)
+                except BlockingIOError:
+                    pass
+    finally:
+        os.close(fd)
+        try:
+            path.unlink()
+        except OSError:
+            pass
+    if not data.strip():
+        raise AuthError("The browser never handed the sign-in back (does the portal support the default-browser flow?)")
+    return data.decode("utf-8", "replace").strip().splitlines()[0]
+
+
+def sign_in_browser(host, pre, timeout=300):
+    """SAML in the default browser; the portal returns through a globalprotectcallback: link."""
+    ensure_callback_handler()
+    if pre["method"] == "REDIRECT":
+        target = pre["request"]
+    else:
+        page = runtime_dir() / "saml-post.html"
+        fd = os.open(page, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with os.fdopen(fd, "w") as f:
+            f.write(pre["request"])
+        target = page.as_uri()
+    debug_log(f"browser sign-in: opening the {'redirect' if pre['method'] == 'REDIRECT' else 'posted form'} in the default browser")
+    try:
+        subprocess.Popen(["xdg-open", target], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    except OSError as e:
+        raise AuthError(f"Could not open the browser: {e}")
+    result = parse_callback_uri(wait_for_callback(int(os.environ.get("OMARCHY_GP_CALLBACK_TIMEOUT") or timeout)))
+    return {"saml-username": result["username"], "prelogin-cookie": result["token"], "saml-auth-status": "1"}
 
 
 def run_sso_window(portal, method, request, timeout_s=300):
@@ -875,29 +1133,53 @@ def interfaces_to_try(setting):
 def pick_prelogin(portal, client_os, setting, gateway=""):
     """Return (interface, host, prelogin result) for the first interface that offers SAML."""
     last = None
+    fallback = None
     for iface in interfaces_to_try(setting):
         host = signin_host(portal, iface, gateway)
         try:
-            return iface, host, prelogin(host, client_os, interface=iface)
+            pre = prelogin(host, client_os, interface=iface)
         except PreloginError as e:
             debug_log(f"prelogin via {iface} rejected: {e}")
             last = e
+            continue
+        if pre["method"] != "PASSWORD":
+            return iface, host, pre
+        if fallback is None:  # keep looking for SAML; use the password form only if nothing offers SSO
+            fallback = (iface, host, pre)
+    if fallback:
+        return fallback
     raise last
 
 
+def http_opener():
+    """urllib opener that honours the proxy and client-certificate options."""
+    import ssl
+    ctx = ssl.create_default_context()
+    if OPTS["certificate"]:
+        try:
+            ctx.load_cert_chain(OPTS["certificate"], OPTS["key"] or None)
+        except (OSError, ssl.SSLError) as e:
+            raise PreloginError(f"Could not load the client certificate: {e}")
+    handlers = [urllib.request.HTTPSHandler(context=ctx)]
+    if OPTS["proxy"]:
+        handlers.append(urllib.request.ProxyHandler({"http": OPTS["proxy"], "https": OPTS["proxy"]}))
+    return urllib.request.build_opener(*handlers)
+
+
 def prelogin(portal, client_os, timeout=20, interface="portal"):
-    body = urllib.parse.urlencode({
-        "tmp": "tmp", "kerberos-support": "yes", "ipv6-support": "yes", "clientVer": "4100", "clientos": client_os,
-    }).encode()
+    fields = {"tmp": "tmp", "kerberos-support": "yes", "ipv6-support": "yes", "clientVer": "4100", "clientos": client_os}
+    if OPTS["browser"]:
+        fields.update({"default-browser": "1", "cas-support": "yes"})
+    body = urllib.parse.urlencode(fields).encode()
     req = urllib.request.Request(
         prelogin_url(portal, interface), data=body, method="POST",
         headers={"User-Agent": "PAN GlobalProtect", "Content-Type": "application/x-www-form-urlencoded"},
     )
-    debug_log(f"prelogin POST {prelogin_url(portal, interface)} clientos={client_os}")
+    debug_log(f"prelogin POST {prelogin_url(portal, interface)} clientos={client_os} browser={OPTS['browser']}")
     try:
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
+        with http_opener().open(req, timeout=timeout) as resp:
             pre = parse_prelogin(resp.read().decode("utf-8", "replace"))
-            debug_log(f"prelogin ok: method={pre['method']}")
+            debug_log(f"prelogin ok: method={pre['method']}" + (" default-browser=yes" if pre.get("defaultBrowser") else ""))
             return pre
     except urllib.error.URLError as e:
         debug_log(f"prelogin failed: {getattr(e, 'reason', e)}")
@@ -906,15 +1188,24 @@ def prelogin(portal, client_os, timeout=20, interface="portal"):
         raise PreloginError(f"Could not reach {portal}: {e}")
 
 
-def authenticate_command(portal, cookie_kind, username, client_os, gateway, hip_script, interface="portal"):
+def authenticate_command(portal, cookie_kind, username, client_os, gateway, hip_script, interface="portal",
+                         proxy="", certificate="", key=""):
+    """openconnect argv; cookie_kind None means a password login (usergroup without a cookie suffix)."""
+    usergroup = f"{interface}:{cookie_kind}" if cookie_kind else interface
     cmd = [
         "openconnect", "--protocol=gp", "--authenticate", "--non-inter", f"--os={client_os}", f"--user={username}",
-        f"--usergroup={interface}:{cookie_kind}", "--passwd-on-stdin",
+        f"--usergroup={usergroup}", "--passwd-on-stdin",
     ]
     if gateway and interface == "portal":
         cmd.append(f"--authgroup={gateway}")
     if hip_script:
         cmd.append(f"--csd-wrapper={hip_script}")
+    if proxy:
+        cmd.append(f"--proxy={proxy}")
+    if certificate:
+        cmd.append(f"--certificate={certificate}")
+    if key:
+        cmd.append(f"--sslkey={key}")
     cmd.append(portal)
     return cmd
 
@@ -927,7 +1218,8 @@ def last_meaningful_line(text):
 
 def authenticate(portal, cookie_kind, cookie, username, client_os, gateway, hip_script, timeout=60, interface="portal"):
     """Exchange a SAML cookie for a session cookie; the cookie travels over stdin only."""
-    cmd = authenticate_command(portal, cookie_kind, username, client_os, gateway, hip_script, interface)
+    cmd = authenticate_command(portal, cookie_kind, username, client_os, gateway, hip_script, interface,
+                               OPTS["proxy"], OPTS["certificate"], OPTS["key"])
     debug_log("openconnect " + " ".join(cmd[1:]))
     try:
         r = run(cmd, timeout=timeout, input_text=cookie + "\n")
@@ -941,6 +1233,94 @@ def authenticate(portal, cookie_kind, cookie, username, client_os, gateway, hip_
     if r.returncode != 0 or not all(auth.get(k) for k in ("COOKIE", "CONNECT_URL", "FINGERPRINT")):
         raise AuthError(last_meaningful_line(r.stderr) or "Portal login failed")
     return auth
+
+
+def authenticate_interactive(host, username, password, client_os, gateway, hip_script, interface, prompt_cb,
+                             timeout=180, openconnect_bin="openconnect"):
+    """Password login driven through a pty: the first password prompt gets `password`, any later prompt
+    (one-time code, push approval, challenge) goes to prompt_cb(prompt, context) which may raise Cancelled."""
+    import pty
+    import select
+    import termios
+    cmd = authenticate_command(host, None, username, client_os, gateway, hip_script, interface,
+                               OPTS["proxy"], OPTS["certificate"], OPTS["key"])
+    cmd = [openconnect_bin] + [a for a in cmd[1:] if a not in ("--non-inter", "--passwd-on-stdin")]
+    debug_log("openconnect (interactive) " + " ".join(cmd[1:]))
+    master, slave = pty.openpty()
+    try:  # never echo what we type back into the transcript
+        attrs = termios.tcgetattr(slave)
+        attrs[3] &= ~termios.ECHO
+        termios.tcsetattr(slave, termios.TCSANOW, attrs)
+    except termios.error:
+        pass
+    try:
+        proc = subprocess.Popen(cmd, stdin=slave, stdout=slave, stderr=slave, close_fds=True, start_new_session=True)
+    except OSError as e:
+        os.close(master)
+        os.close(slave)
+        raise AuthError(f"Could not run openconnect: {e}")
+    os.close(slave)
+    buf, answered, deadline = "", False, time.monotonic() + timeout
+    try:
+        while True:
+            ready, _, _ = select.select([master], [], [], 0.5)
+            if ready:
+                try:
+                    chunk = os.read(master, 4096)
+                except OSError:
+                    chunk = b""
+                if not chunk:
+                    break
+                buf += chunk.decode("utf-8", "replace").replace("\r", "")
+                prompt = prompt_pending(buf)
+                if prompt:
+                    low = prompt.lower()
+                    if "user" in low and "name" in low:
+                        answer = username
+                    elif not answered:
+                        answer, answered = password, True
+                    else:
+                        context = "\n".join(l for l in buf.splitlines()[-6:-1] if l.strip())
+                        answer = prompt_cb(prompt, context)
+                    os.write(master, (answer + "\n").encode())
+                    buf += "\n"
+                continue
+            if proc.poll() is not None:
+                break
+            if time.monotonic() > deadline:
+                raise AuthError("openconnect timed out waiting for a response")
+    finally:
+        if proc.poll() is None:
+            try:
+                proc.kill()
+            except OSError:
+                pass
+        proc.wait()
+        os.close(master)
+    auth = parse_authenticate_output(buf)
+    debug_log(f"openconnect (interactive) rc={proc.returncode} keys={sorted(auth)}")
+    if proc.returncode != 0 or not all(auth.get(k) for k in ("COOKIE", "CONNECT_URL", "FINGERPRINT")):
+        raise AuthError(last_meaningful_line(buf) or "Login failed")
+    return auth
+
+
+def authenticate_with_password(host, username, password, client_os, gateway, hip_script, interface, portal):
+    """Interactive login with dialogs for challenges; a remembered password that stopped working is asked again once."""
+    def ask(prompt, context=""):
+        return run_prompt_dialog(host, prompt, context)
+
+    try:
+        return authenticate_interactive(host, username, password, client_os, gateway, hip_script, interface, ask)
+    except AuthError as e:
+        if credential_lookup(portal, username) != password:
+            raise
+        credential_clear(portal, username)
+        debug_log("stored password rejected; asking again")
+        username, password, remember = run_password_dialog(host, {}, str(e), username)
+        if remember:
+            credential_store(portal, username, password)
+        save_state(username=username)
+        return authenticate_interactive(host, username, password, client_os, gateway, hip_script, interface, ask)
 
 
 def hip_script_path():
@@ -972,6 +1352,35 @@ def keyring_lookup(portal):
 
 def keyring_has(portal):  # noqa: F811 — replaces the placeholder above
     return keyring_lookup(portal) is not None
+
+
+def _credential_attrs(portal, username):
+    return ["application", APP, "portal", portal, "user", username, "kind", "password"]
+
+
+def credential_store(portal, username, password):
+    try:
+        run(["secret-tool", "store", f"--label=GlobalProtect password ({username} @ {portal})",
+             *_credential_attrs(portal, username)], input_text=password)
+    except (OSError, subprocess.TimeoutExpired):
+        pass
+
+
+def credential_lookup(portal, username):
+    if not username:
+        return None
+    try:
+        r = run(["secret-tool", "lookup", *_credential_attrs(portal, username)])
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    return (r.stdout.strip() or None) if r.returncode == 0 else None
+
+
+def credential_clear(portal, username):
+    try:
+        run(["secret-tool", "clear", *_credential_attrs(portal, username)])
+    except (OSError, subprocess.TimeoutExpired):
+        pass
 
 
 def keyring_clear(portal):
@@ -1017,7 +1426,7 @@ def ensure_nm_profile(portal, hip, hip_script=None):
     """Create or update the GlobalProtect NM profile. Idempotent."""
     if hip and hip_script is None:
         hip_script = hip_script_path()
-    data = build_vpn_data(portal, hip, hip_script)
+    data = build_vpn_data(portal, hip, hip_script, OPTS["proxy"], OPTS["certificate"], OPTS["key"])
     cmd = nm_profile_command(nm_connection_state() is not None, data)
     debug_log(" ".join(cmd))
     try:
@@ -1086,7 +1495,30 @@ def sign_in(portal, client_os, auth_interface="auto", gateway="", announce=True)
     if announce:
         emit("signing-in")
     iface, host, pre = pick_prelogin(portal, CLIENT_OS.get(client_os, "Windows"), auth_interface, gateway)
-    result = run_sso_window(host, pre["method"], pre["request"])
+    if pre["method"] == "PASSWORD":
+        username = load_state().get("username", "")
+        stored = credential_lookup(portal, username) if not OPTS["fresh"] else None
+        if stored:
+            password = stored
+            debug_log(f"password login: using the remembered password for {username}")
+        else:
+            username, password, remember = run_password_dialog(host, pre, pre["message"], username)
+            if remember:
+                credential_store(portal, username, password)
+            else:
+                credential_clear(portal, username)
+            debug_log(f"password login: user={username} remember={remember}")
+        if announce:
+            save_state(username=username, portal=portal, authInterface=iface)
+        else:
+            save_state(username=username, portal=portal)
+        return "password", password, username, iface, host
+    if OPTS["browser"] and pre.get("defaultBrowser"):
+        result = sign_in_browser(host, pre)
+    else:
+        if OPTS["browser"]:
+            warn("Portal does not advertise the default-browser flow; using the embedded sign-in window")
+        result = run_sso_window(host, pre["method"], pre["request"])
     kind, cookie = choose_cookie(result)
     username = result["saml-username"]
     debug_log(f"sso done: interface={iface} host={host} cookie-kind={kind} user={username} portal-cookie={'yes' if result.get('portal-userauthcookie') else 'no'}")
@@ -1141,7 +1573,10 @@ def cmd_connect(args):
         if auth is None:
             kind, cookie, username, iface, host = sign_in(portal, args.client_os, args.auth_interface, gateway=choice)
             emit("authenticating")
-            auth = authenticate(host, kind, cookie, username, args.client_os, choice, hip_script, interface=iface)
+            if kind == "password":
+                auth = authenticate_with_password(host, username, cookie, args.client_os, choice, hip_script, iface, portal)
+            else:
+                auth = authenticate(host, kind, cookie, username, args.client_os, choice, hip_script, interface=iface)
         gateway_host = urllib.parse.urlsplit(auth["CONNECT_URL"]).hostname or ""
         save_state(gateway=gateway_host, gatewayIp=resolve_host(gateway_host) if gateway_host else "", portal=portal)
         emit("activating")
@@ -1178,6 +1613,24 @@ def cmd_disconnect(args):
         nm_down()
     except AuthError as e:
         fail(str(e))
+
+
+def cmd_callback(args):
+    """Invoked by the desktop handler with the globalprotectcallback: URI; hands it to the waiting sign-in."""
+    set_debug(True)  # the handler runs without our flags; a browser round-trip must always be traceable
+    debug_log("callback received from the browser")
+    try:
+        fd = os.open(callback_fifo(), os.O_WRONLY | os.O_NONBLOCK)
+    except OSError:
+        try:
+            run(["notify-send", "-a", "GlobalProtect", "-i", "dialog-warning", "Sign-in callback", "No GlobalProtect sign-in is waiting for it"], timeout=5)
+        except (OSError, subprocess.TimeoutExpired):
+            pass
+        fail("No sign-in is waiting for a callback", 1)
+    try:
+        os.write(fd, (args.uri.strip() + "\n").encode())
+    finally:
+        os.close(fd)
 
 
 def cmd_forget(args):
@@ -1271,9 +1724,12 @@ def cmd_gateways(args):
     try:
         if args.refresh:
             kind, cookie, username, _iface, _host = sign_in(portal, args.client_os, "portal", announce=False)
-            if kind != "prelogin-cookie":
+            if kind == "password":
+                cfg = fetch_portal_config(portal, username, "", args.client_os, password=cookie)
+            elif kind == "prelogin-cookie":
+                cfg = fetch_portal_config(portal, username, cookie, args.client_os)
+            else:
                 raise PortalConfigError("Portal sign-in returned no prelogin cookie")
-            cfg = fetch_portal_config(portal, username, cookie, args.client_os)
             if cfg["portalUserAuthCookie"]:
                 keyring_store(portal, cfg["portalUserAuthCookie"])
             save_state(gateways=cfg["gateways"], gatewaysFetchedAt=int(time.time()), portalName=cfg["portalName"], hipInterval=cfg["hipInterval"])
@@ -1322,6 +1778,10 @@ def main(argv=None):
         sp.add_argument("--auth-interface", dest="auth_interface", default="auto", choices=list(AUTH_INTERFACES),
                         help="where to do the SAML sign-in: gateway, portal, or auto (probe gateway first)")
         sp.add_argument("--debug", action="store_true", help="append each step to the debug log in $XDG_STATE_HOME")
+        sp.add_argument("--browser", action="store_true", help="SAML in the default browser via the globalprotectcallback: handler")
+        sp.add_argument("--proxy", default="", help="proxy URL for prelogin, the config fetch, openconnect, and the tunnel")
+        sp.add_argument("--certificate", default="", help="client certificate file (PEM/PKCS#12) for TLS client auth")
+        sp.add_argument("--key", default="", help="client certificate key file, if separate")
 
     for name, fn, help_text in (
         ("status", cmd_status, "print the current state as JSON"),
@@ -1333,6 +1793,7 @@ def main(argv=None):
         ("hip-report", cmd_hip_report, "show what the HIP report says about this machine"),
         ("collect-logs", cmd_collect_logs, "write a scrubbed troubleshooting tarball (default: ~/Downloads)"),
         ("gateways", cmd_gateways, "list the portal's gateways (--refresh fetches, --probe measures latency)"),
+        ("callback", cmd_callback, "internal: receive a globalprotectcallback: URI from the browser"),
     ):
         sp = sub.add_parser(name, help=help_text)
         common(sp)
@@ -1341,9 +1802,12 @@ def main(argv=None):
         if name == "gateways":
             sp.add_argument("--refresh", action="store_true", help="sign in at the portal and fetch the gateway list")
             sp.add_argument("--probe", action="store_true", help="measure TLS latency to each gateway")
+        if name == "callback":
+            sp.add_argument("uri", help="the globalprotectcallback: URI")
         sp.set_defaults(fn=fn)
     args = p.parse_args(argv)
     set_debug(args.debug or os.environ.get("OMARCHY_GP_DEBUG") == "1")
+    set_options(args)
     debug_log(" ".join(a for a in (argv if argv is not None else sys.argv[1:]) if a != "--debug"))
     args.fn(args)
 

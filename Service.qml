@@ -26,6 +26,10 @@ Item {
   readonly property string authInterface: ["auto", "portal", "gateway"].indexOf(String(setting("authInterface", "auto"))) >= 0 ? String(setting("authInterface", "auto")) : "auto"
   readonly property bool debug: setting("debug", false) === true
   readonly property bool alwaysOn: String(setting("connectMethod", "on-demand")) === "always-on"
+  readonly property bool systemBrowser: String(setting("samlBrowser", "embedded")) === "system"
+  readonly property string proxy: String(setting("proxy", "")).trim()
+  readonly property string certificate: String(setting("certificate", "")).trim()
+  readonly property string certificateKey: String(setting("certificateKey", "")).trim()
   readonly property int pauseMinutes: Math.min(1440, Math.max(1, parseInt(String(setting("pauseMinutes", 30)), 10) || 30))
   readonly property int refreshIntervalSec: Math.min(120, Math.max(2, parseInt(String(setting("refreshIntervalSec", 5)), 10) || 5))
 
@@ -90,6 +94,10 @@ Item {
     var args = [cliPath, cmd, "--portal", portal, "--gateway", gateway, "--client-os", clientOs, "--auth-interface", authInterface]
     if (hipReport) args.push("--hip")
     if (debug) args.push("--debug")
+    if (systemBrowser) args.push("--browser")
+    if (proxy !== "") args.push("--proxy", proxy)
+    if (certificate !== "") args.push("--certificate", certificate)
+    if (certificateKey !== "") args.push("--key", certificateKey)
     return args.concat(extra || [])
   }
 
