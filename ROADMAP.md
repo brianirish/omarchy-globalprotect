@@ -151,6 +151,10 @@ Everything above stable, and the widget stands on its own.
 - [x] Widget loads on a cold shell start (FINAL `activeFocus` alias renamed)
 - [x] QML lint in `scripts/check`
 
+### v1.0.2 — Fix (shipped 2026-09-11)
+
+- [x] Switching the VPN off no longer triggers tunnel restoration (stale poll race)
+
 ## Beyond 1.0
 
 The hard tier, in the order they would be worth attempting:

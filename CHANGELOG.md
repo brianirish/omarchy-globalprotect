@@ -1,5 +1,15 @@
 # Changelog
 
+## 1.0.2 — 2026-09-11
+
+- Fix: switching the VPN off from the open panel brought it straight back. While
+  the panel is open the widget polls every second; a poll that started just before
+  the disconnect finished returned a stale "connected", the next poll then looked
+  like an outage, and tunnel restoration reconnected. The outage check now reads
+  the switch-off intent as it was when the poll was sampled, and a "connected"
+  snapshot is ignored while the disconnect is ours (`Model.tunnelDropped`,
+  `Model.snapshotIsStale`, both unit-tested).
+
 ## 1.0.1 — 2026-09-11
 
 - Fix: the widget failed to load on a cold shell start (login or `omarchy restart shell`)
