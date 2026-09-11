@@ -247,6 +247,26 @@ function autoConnectDecision(ctx) {
   return { action: "connect", reason: c.alwaysOn ? "always-on" : "restore" }
 }
 
+// Did the tunnel go down without us asking? Read the user's switch-off intent
+// (userOff) as it was when the status was sampled: the Service must call this
+// BEFORE it resets that intent, or a user's own disconnect looks like an outage
+// and Always-Off restores the tunnel it was just told to drop.
+function tunnelDropped(ctx) {
+  var c = ctx || {}
+  return c.previous === "connected" && c.state !== "connected"
+      && !c.disconnecting && !c.userOff && !c.reconnectPending
+}
+
+// A status poll that straddles one of our own transitions reports the state
+// from before it. Ignore "disconnected" while our connect runs, and "connected"
+// while our disconnect runs or right after the user switched off.
+function snapshotIsStale(ctx) {
+  var c = ctx || {}
+  if (c.connecting && c.state === "disconnected") return true
+  if ((c.disconnecting || c.userOff) && c.state === "connected") return true
+  return false
+}
+
 // 30 s, 60 s, 120 s, ... capped at 10 min.
 function nextBackoffMs(failures) {
   var n = Math.max(1, Math.floor(Number(failures) || 0))

@@ -129,10 +129,14 @@ Item {
   function applyStatus(raw) {
     var s = Model.normalizeStatus(raw)
     var previous = state
+    var userOff = _desired === 0  // the intent as it was when this poll was sampled
     everPolled = true
-    // While our own connect run is in flight the CLI's run file is the truth;
-    // a stale "disconnected" from a poll that raced the run file would flicker.
-    if (!(connectProc.running && s.state === "disconnected")) state = s.state
+    // A poll that straddles one of our own transitions reports the state from
+    // before it: "disconnected" while our connect runs (the run file is the
+    // truth), "connected" after our disconnect finished. Applying the latter
+    // made the next real poll look like an outage, which Always-Off restored.
+    if (!Model.snapshotIsStale({ state: s.state, connecting: connectProc.running,
+                                 disconnecting: disconnectProc.running, userOff: userOff })) state = s.state
     detail = s.detail
     reportedPortal = s.portal
     gatewayHost = s.gateway
@@ -158,7 +162,8 @@ Item {
     if (s.state === "connected") sample(s.rxBytes, s.txBytes)
     else resetSamples()
     if (_desired !== -1 && !connectProc.running && !disconnectProc.running && connected === (_desired === 1)) _desired = -1
-    if (previous === "connected" && state !== "connected" && !disconnectProc.running && _desired !== 0 && !reconnectAfterDown.running) {
+    if (Model.tunnelDropped({ previous: previous, state: state, disconnecting: disconnectProc.running,
+                              userOff: userOff, reconnectPending: reconnectAfterDown.running })) {
       // Not our doing: restore it (the official client's tunnel restoration), re-signing in if the cookie expired.
       wantRestore = true
       notify("Disconnected", "The GlobalProtect tunnel went down; reconnecting", "network-vpn-disconnected")

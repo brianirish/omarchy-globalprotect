@@ -9,7 +9,7 @@ const vm = require("node:vm");
 
 const src = fs.readFileSync(path.join(__dirname, "..", "Model.js"), "utf8").replace(/^\.pragma library\s*$/m, "");
 const M = {};
-vm.runInNewContext(src + "\nthis.__exports = { autoConnectDecision: typeof autoConnectDecision === 'function' ? autoConnectDecision : undefined, nextBackoffMs: typeof nextBackoffMs === 'function' ? nextBackoffMs : undefined, autoText: typeof autoText === 'function' ? autoText : undefined, normalizeStatus, routesText, dnsText, gatewayMeta, policyChanges: typeof policyChanges === 'function' ? policyChanges : undefined, normalizePolicy: typeof normalizePolicy === 'function' ? normalizePolicy : undefined, resolverText: typeof resolverText === 'function' ? resolverText : undefined };", M);
+vm.runInNewContext(src + "\nthis.__exports = { autoConnectDecision: typeof autoConnectDecision === 'function' ? autoConnectDecision : undefined, nextBackoffMs: typeof nextBackoffMs === 'function' ? nextBackoffMs : undefined, autoText: typeof autoText === 'function' ? autoText : undefined, tunnelDropped: typeof tunnelDropped === 'function' ? tunnelDropped : undefined, snapshotIsStale: typeof snapshotIsStale === 'function' ? snapshotIsStale : undefined, normalizeStatus, routesText, dnsText, gatewayMeta, policyChanges: typeof policyChanges === 'function' ? policyChanges : undefined, normalizePolicy: typeof normalizePolicy === 'function' ? normalizePolicy : undefined, resolverText: typeof resolverText === 'function' ? resolverText : undefined };", M);
 const Model = M.__exports;
 
 let passed = 0;
@@ -105,6 +105,44 @@ test("backoff doubles from 30 s and caps at 10 min", () => {
   assert.equal(Model.nextBackoffMs(3), 120000);
   assert.equal(Model.nextBackoffMs(10), 600000);
   assert.equal(Model.nextBackoffMs(0), 30000);
+});
+
+// A connected -> not-connected transition is "not our doing" only when nothing
+// of ours explains it. The user's switch-off intent must be read as it was when
+// the status was sampled: the bug was resetting it one line before asking.
+const drop = { previous: "connected", state: "disconnected", disconnecting: false, userOff: false, reconnectPending: false };
+test("an external drop is detected", () => {
+  assert.equal(Model.tunnelDropped(drop), true);
+  assert.equal(Model.tunnelDropped({ ...drop, state: "error" }), true);
+});
+test("a user switch-off is never treated as an external drop", () => {
+  assert.equal(Model.tunnelDropped({ ...drop, userOff: true }), false);
+});
+test("a disconnect in flight or a pending reconnect is not a drop", () => {
+  assert.equal(Model.tunnelDropped({ ...drop, disconnecting: true }), false);
+  assert.equal(Model.tunnelDropped({ ...drop, reconnectPending: true }), false);
+});
+test("no transition means no drop", () => {
+  assert.equal(Model.tunnelDropped({ ...drop, previous: "disconnected" }), false);
+  assert.equal(Model.tunnelDropped({ ...drop, state: "connected" }), false);
+  assert.equal(Model.tunnelDropped({ ...drop, previous: "" }), false);
+});
+
+// A status poll that straddles one of our own transitions can report the state
+// from before it: "disconnected" while our connect is still running, or
+// "connected" after our disconnect finished. Both are ignored.
+test("a stale disconnected snapshot during our connect is ignored", () => {
+  assert.equal(Model.snapshotIsStale({ state: "disconnected", connecting: true, disconnecting: false, userOff: false }), true);
+  assert.equal(Model.snapshotIsStale({ state: "connected", connecting: true, disconnecting: false, userOff: false }), false);
+});
+test("a stale connected snapshot during or right after our disconnect is ignored", () => {
+  assert.equal(Model.snapshotIsStale({ state: "connected", connecting: false, disconnecting: true, userOff: true }), true);
+  assert.equal(Model.snapshotIsStale({ state: "connected", connecting: false, disconnecting: false, userOff: true }), true);
+  assert.equal(Model.snapshotIsStale({ state: "disconnected", connecting: false, disconnecting: false, userOff: true }), false);
+});
+test("an idle poll is never stale", () => {
+  for (const state of ["connected", "disconnected", "error"])
+    assert.equal(Model.snapshotIsStale({ state, connecting: false, disconnecting: false, userOff: false }), false, state);
 });
 
 console.log(passed + " passed");
