@@ -159,6 +159,11 @@ Everything above stable, and the widget stands on its own.
 
 - [x] Switch-off intent shared through the CLI so the widget on a second bar cannot restore a deliberate disconnect
 
+### v1.0.4 — Fix (shipped 2026-09-11)
+
+- [x] One acting copy per machine: the widget on the first screen notifies, restores, and runs Always-On; the rest display
+- [x] Always-On pause shared across bars (`pause --minutes N`)
+
 ## Beyond 1.0
 
 The hard tier, in the order they would be worth attempting:

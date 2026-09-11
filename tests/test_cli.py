@@ -1086,6 +1086,46 @@ class DeliberateDownTests(unittest.TestCase):
             self.assertEqual(gp.deliberate_down(), {"userOff": False, "pausedUntil": 0})
 
 
+class SharedPauseTests(unittest.TestCase):
+    """An Always-On pause pressed on either bar must hold on every bar."""
+
+    def _env(self, d):
+        return unittest.mock.patch.dict(os.environ, {"XDG_STATE_HOME": d, "XDG_RUNTIME_DIR": d})
+
+    def test_pause_sets_and_clears_the_shared_pause(self):
+        import argparse
+        with tempfile.TemporaryDirectory() as d, self._env(d):
+            with unittest.mock.patch.object(gp.time, "time", return_value=2_000_000):
+                gp.cmd_pause(argparse.Namespace(minutes=30))
+            self.assertEqual(gp.shared_pause(), (2_000_000 + 30 * 60) * 1000)
+            gp.cmd_pause(argparse.Namespace(minutes=0))
+            self.assertEqual(gp.shared_pause(), 0)
+
+    def test_status_reports_the_later_of_both_pauses(self):
+        with tempfile.TemporaryDirectory() as d, self._env(d):
+            gp.save_state(portal="vpn.example.com")
+            deps = {"openconnect": True, "nmOpenconnect": True, "webkit": True}
+            with unittest.mock.patch.object(gp, "check_deps", return_value=deps), \
+                 unittest.mock.patch.object(gp, "nm_connection_state", return_value="deactivated"), \
+                 unittest.mock.patch.object(gp, "nm_connectivity", return_value="full"), \
+                 unittest.mock.patch.object(gp, "split_dns_state", return_value="not-needed"), \
+                 unittest.mock.patch.object(gp, "keyring_has", return_value=False):
+                gp.mark_deliberate_down(1000)
+                gp.set_pause(5000)
+                self.assertEqual(gp.status_json("vpn.example.com")["pausedUntil"], 5000)
+                gp.set_pause(500)
+                self.assertEqual(gp.status_json("vpn.example.com")["pausedUntil"], 1000)
+
+    def test_connect_clears_the_shared_pause(self):
+        import argparse
+        with tempfile.TemporaryDirectory() as d, self._env(d):
+            gp.set_pause(5000)
+            with unittest.mock.patch.object(gp, "resolve_portal", return_value=""):
+                with self.assertRaises(SystemExit):
+                    gp.cmd_connect(argparse.Namespace())
+            self.assertEqual(gp.shared_pause(), 0)
+
+
 if __name__ == "__main__":
     unittest.main()
 

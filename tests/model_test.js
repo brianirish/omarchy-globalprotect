@@ -9,7 +9,7 @@ const vm = require("node:vm");
 
 const src = fs.readFileSync(path.join(__dirname, "..", "Model.js"), "utf8").replace(/^\.pragma library\s*$/m, "");
 const M = {};
-vm.runInNewContext(src + "\nthis.__exports = { autoConnectDecision: typeof autoConnectDecision === 'function' ? autoConnectDecision : undefined, nextBackoffMs: typeof nextBackoffMs === 'function' ? nextBackoffMs : undefined, autoText: typeof autoText === 'function' ? autoText : undefined, tunnelDropped: typeof tunnelDropped === 'function' ? tunnelDropped : undefined, snapshotIsStale: typeof snapshotIsStale === 'function' ? snapshotIsStale : undefined, normalizeStatus, routesText, dnsText, gatewayMeta, policyChanges: typeof policyChanges === 'function' ? policyChanges : undefined, normalizePolicy: typeof normalizePolicy === 'function' ? normalizePolicy : undefined, resolverText: typeof resolverText === 'function' ? resolverText : undefined };", M);
+vm.runInNewContext(src + "\nthis.__exports = { autoConnectDecision: typeof autoConnectDecision === 'function' ? autoConnectDecision : undefined, nextBackoffMs: typeof nextBackoffMs === 'function' ? nextBackoffMs : undefined, autoText: typeof autoText === 'function' ? autoText : undefined, tunnelDropped: typeof tunnelDropped === 'function' ? tunnelDropped : undefined, snapshotIsStale: typeof snapshotIsStale === 'function' ? snapshotIsStale : undefined, isLeader: typeof isLeader === 'function' ? isLeader : undefined, normalizeStatus, routesText, dnsText, gatewayMeta, policyChanges: typeof policyChanges === 'function' ? policyChanges : undefined, normalizePolicy: typeof normalizePolicy === 'function' ? normalizePolicy : undefined, resolverText: typeof resolverText === 'function' ? resolverText : undefined };", M);
 const Model = M.__exports;
 
 let passed = 0;
@@ -150,6 +150,19 @@ test("normalizeStatus carries the shared switch-off intent and pause", () => {
   assert.equal(Model.normalizeStatus({ userOff: true, pausedUntil: 5000 }).pausedUntil, 5000);
   assert.equal(Model.normalizeStatus({}).userOff, false);
   assert.equal(Model.normalizeStatus({}).pausedUntil, 0);
+});
+
+// One bar per screen means one widget per screen; only the one on the first
+// screen acts on shared events (notifications, restoration, Always-On).
+test("the widget on the first screen is the leader", () => {
+  assert.equal(Model.isLeader("DP-1", ["DP-1", "DP-3"]), true);
+  assert.equal(Model.isLeader("DP-3", ["DP-1", "DP-3"]), false);
+});
+test("a lone or unknown screen always leads", () => {
+  assert.equal(Model.isLeader("DP-3", ["DP-3"]), true);
+  assert.equal(Model.isLeader("", ["DP-1", "DP-3"]), true);
+  assert.equal(Model.isLeader("DP-1", []), true);
+  assert.equal(Model.isLeader("DP-1", null), true);
 });
 
 console.log(passed + " passed");

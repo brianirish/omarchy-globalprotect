@@ -708,6 +708,28 @@ def deliberate_down():
         return {"userOff": False, "pausedUntil": 0}
 
 
+def _pause_path():
+    return state_dir() / "pause.json"
+
+
+def set_pause(paused_until_ms):
+    """The shared Always-On pause (epoch ms; 0 clears): pressed on any bar, honoured by all."""
+    if int(paused_until_ms or 0) > 0:
+        _pause_path().write_text(json.dumps({"pausedUntil": int(paused_until_ms)}))
+    else:
+        try:
+            _pause_path().unlink()
+        except FileNotFoundError:
+            pass
+
+
+def shared_pause():
+    try:
+        return int(json.loads(_pause_path().read_text()).get("pausedUntil") or 0)
+    except (OSError, ValueError, TypeError, AttributeError):
+        return 0
+
+
 def read_runfile():
     try:
         d = json.loads((runtime_dir() / "connect.json").read_text())
@@ -988,6 +1010,7 @@ def status_json(portal):
         "deps": deps,
     }
     out.update(deliberate_down())
+    out["pausedUntil"] = max(out["pausedUntil"], shared_pause())
     if state == "connected":
         d = nm_connection_details()
         ip = d.get("IP4.ADDRESS[1]", "").split("/")[0]
@@ -1869,6 +1892,7 @@ def _install_term_handler():
 def cmd_connect(args):
     _install_term_handler()
     clear_deliberate_down()  # any connect, from any bar, means the user wants it up again
+    set_pause(0)
     portal = resolve_portal(args)
     if not portal:
         fail("No portal configured", 1)
@@ -1935,6 +1959,11 @@ def cmd_login(args):
         fail(str(e))
     except KeyboardInterrupt:
         fail("Interrupted", 2)
+
+
+def cmd_pause(args):
+    minutes = int(getattr(args, "minutes", 0) or 0)
+    set_pause((int(time.time()) + minutes * 60) * 1000 if minutes > 0 else 0)
 
 
 def cmd_disconnect(args):
@@ -2193,6 +2222,7 @@ def main(argv=None):
         ("status", cmd_status, "print the current state as JSON"),
         ("connect", cmd_connect, "sign in if needed and bring the tunnel up"),
         ("disconnect", cmd_disconnect, "bring the tunnel down"),
+        ("pause", cmd_pause, "pause Always-On for --minutes N on every bar (0 resumes)"),
         ("login", cmd_login, "run only the sign-in window and store the session"),
         ("forget", cmd_forget, "drop the stored session and the sign-in window's saved logins"),
         ("deps", cmd_deps, "report which dependencies are installed"),
@@ -2209,6 +2239,8 @@ def main(argv=None):
         if name == "disconnect":
             sp.add_argument("--pause-minutes", dest="pause_minutes", type=int, default=0,
                             help="record an Always-On pause of N minutes so every bar's widget honours it")
+        if name == "pause":
+            sp.add_argument("--minutes", type=int, default=0, help="pause length; 0 resumes")
         if name == "collect-logs":
             sp.add_argument("--output", default="", help="directory for the tarball")
         if name == "gateways":

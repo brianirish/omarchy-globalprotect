@@ -114,6 +114,7 @@ bin/omarchy-globalprotect disconnect
 bin/omarchy-globalprotect login                        # sign in only, store the session
 bin/omarchy-globalprotect forget [--remove]            # drop the session; --remove drops the portal too
 bin/omarchy-globalprotect gateways --refresh --probe   # fetch the portal's gateways and settings, time each gateway
+bin/omarchy-globalprotect pause --minutes 30           # pause Always-On on every bar (0 resumes)
 bin/omarchy-globalprotect hip-report --client-os win   # what the HIP report claims (JSON)
 bin/omarchy-globalprotect hip-status                   # last HIP check/submission from the journal
 bin/omarchy-globalprotect welcome --show               # the portal's welcome page

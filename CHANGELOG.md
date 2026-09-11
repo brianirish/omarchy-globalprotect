@@ -1,5 +1,19 @@
 # Changelog
 
+## 1.0.4 — 2026-09-11
+
+- Fix: on a multi-monitor setup every connect produced two "Connected" notifications,
+  one per bar, and both bars ran tunnel restoration and Always-On independently. Each
+  bar's copy of the widget now knows which screen it is on, and only the copy on the
+  first screen acts on shared events (notifications, restoration, Always-On, the
+  portal refresh); the others display state and take clicks. If that screen goes
+  away, the next one leads.
+- An Always-On pause pressed on either bar now holds on every bar: new CLI command
+  `pause --minutes N` (0 resumes) keeps the shared pause next to the switch-off marker,
+  and `status` reports the later of the two.
+- A `gp-trace service up` journal line per bar at startup shows how many copies are
+  running and which one leads.
+
 ## 1.0.3 — 2026-09-11
 
 - Fix: on a multi-monitor setup, switching the VPN off brought it straight back. Each

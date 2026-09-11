@@ -183,8 +183,14 @@ Panel {
   implicitWidth: button.implicitWidth
   implicitHeight: button.implicitHeight
 
+  // Which screen this copy of the widget lives on; the first screen's copy leads.
+  readonly property var hostScreen: QsWindow.window ? QsWindow.window.screen : null
+  readonly property bool leader: Model.isLeader(hostScreen ? hostScreen.name : "",
+                                                (Quickshell.screens || []).map(function (s) { return s.name }))
+
   Service {
     id: gp
+    leader: gpPanel.leader
     settings: gpPanel.settings
   }
 

@@ -73,6 +73,10 @@ Item {
   property string actionStatus: ""
   property string lastError: ""
   property var hostState: Model.normalizeHostState(null)
+  // Only the leader (the widget on the first screen; see Model.isLeader) acts
+  // on shared events, so two bars do not notify, restore, or connect twice.
+  property bool leader: true
+  property double _clearedPause: 0
   // Always-On / tunnel restoration bookkeeping (see Model.autoConnectDecision).
   property double pausedUntil: 0
   property int failures: 0
@@ -134,7 +138,7 @@ Item {
     // needs: each bar runs its own Service, and without it that one saw the tunnel
     // vanish, called it an outage, and restored what the user had just switched off.
     var userOff = _desired === 0 || s.userOff
-    if (s.pausedUntil > pausedUntil) pausedUntil = s.pausedUntil  // an Always-On pause set from any bar
+    if (s.pausedUntil > pausedUntil && s.pausedUntil !== _clearedPause) pausedUntil = s.pausedUntil  // a pause set from any bar
     everPolled = true
     // A poll that straddles one of our own transitions reports the state from
     // before it: "disconnected" while our connect runs (the run file is the
@@ -169,20 +173,21 @@ Item {
     if (s.state === "connected") sample(s.rxBytes, s.txBytes)
     else resetSamples()
     if (_desired !== -1 && !connectProc.running && !disconnectProc.running && connected === (_desired === 1)) _desired = -1
-    if (Model.tunnelDropped({ previous: previous, state: state, disconnecting: disconnectProc.running,
-                              userOff: userOff, reconnectPending: reconnectAfterDown.running })) {
+    if (leader && Model.tunnelDropped({ previous: previous, state: state, disconnecting: disconnectProc.running,
+                                        userOff: userOff, reconnectPending: reconnectAfterDown.running })) {
       trace("tunnelDropped -> restore")
       // Not our doing: restore it (the official client's tunnel restoration), re-signing in if the cookie expired.
       wantRestore = true
       notify("Disconnected", "The GlobalProtect tunnel went down; reconnecting", "network-vpn-disconnected")
     }
-    if (state === "connected" && previous !== "connected" && previous !== "")
+    if (leader && state === "connected" && previous !== "connected" && previous !== "")
       notify("Connected", gatewayHost !== "" ? "Through " + gatewayHost : "The GlobalProtect tunnel is up", "network-vpn")
     if (state === "connected") { wantRestore = false; failures = 0; nextAttemptAt = 0 }
     evaluateAuto()
   }
 
   function evaluateAuto() {
+    if (!leader) return
     var now = Date.now()
     var d = Model.autoConnectDecision({
       alwaysOn: alwaysOn, restore: wantRestore, configured: configured, depsOk: depsOk, state: state,
@@ -203,16 +208,21 @@ Item {
     wantRestore = false
     failures = 0
     nextAttemptAt = 0
+    if (cliPath !== "") Quickshell.execDetached(cliArgs("pause", ["--minutes", String(minutes)]))  // every bar honours it
     flash("Always-On paused for " + minutes + " min")
     evaluateAuto()
   }
 
   function resume() {
+    _clearedPause = pausedUntil  // a status poll already in flight may still carry it
     pausedUntil = 0
     nextAttemptAt = 0
     failures = 0
+    if (cliPath !== "") Quickshell.execDetached(cliArgs("pause", ["--minutes", "0"]))
     flash("Always-On resumed")
-    evaluateAuto()
+    // Connect from whichever bar was clicked; the leader would otherwise wait a tick.
+    if (alwaysOn && !connected && !transitioning) connectVpn(false, "resume")
+    else evaluateAuto()
   }
 
   function togglePause() {
@@ -386,8 +396,10 @@ Item {
   }
 
   // One journal line per decision (journalctl --user | grep 'gp-trace'); rare events only.
+  Component.onCompleted: trace("service up")  // one line per bar at startup: how many copies, which leads
+
   function trace(what) {
-    console.log("gp-trace " + what + " | state=" + state + " desired=" + _desired + " alwaysOn=" + alwaysOn
+    console.log("gp-trace " + what + " | leader=" + leader + " state=" + state + " desired=" + _desired + " alwaysOn=" + alwaysOn
                 + " restore=" + wantRestore + " paused=" + paused + " conn=" + connectProc.running
                 + " disc=" + disconnectProc.running + " rad=" + reconnectAfterDown.running)
   }
@@ -416,7 +428,7 @@ Item {
 
   Timer { id: monitorDebounce; interval: 400; repeat: false; onTriggered: root.refresh() }
   // Always-On heartbeat: cheap, and it is what turns "retry in 30 s" into an attempt.
-  Timer { id: autoTick; interval: 5000; repeat: true; running: root.cliPath !== "" && (root.alwaysOn || root.wantRestore); onTriggered: root.evaluateAuto() }
+  Timer { id: autoTick; interval: 5000; repeat: true; running: root.leader && root.cliPath !== "" && (root.alwaysOn || root.wantRestore); onTriggered: root.evaluateAuto() }
   Timer { id: delayedRefresh; interval: 600; repeat: false; onTriggered: root.refresh() }
   Timer { id: actionStatusTimer; interval: 2200; repeat: false; onTriggered: root.actionStatus = "" }
   // Comes back after a deliberate disconnect: fresh=true forces the sign-in
@@ -564,13 +576,13 @@ Item {
       root.hipStatus = Model.normalizeHipStatus(parsed)
       if (root.hipStatus.warning !== "" && root.hipStatus.warningAt !== root._lastHipWarningAt) {
         root._lastHipWarningAt = root.hipStatus.warningAt
-        root.notify("Host check", root.hipStatus.warning, "dialog-warning")
+        if (root.leader) root.notify("Host check", root.hipStatus.warning, "dialog-warning")
       }
     }
   }
 
   Timer { id: hipStatusTick; interval: 600000; repeat: true; running: root.connected && root.hipReport; onTriggered: root.loadHipStatus() }
-  Timer { id: configRefreshTick; interval: 300000; repeat: true; running: root.connected && root.cliPath !== ""; triggeredOnStart: true; onTriggered: root.maybeRefreshConfig() }
+  Timer { id: configRefreshTick; interval: 300000; repeat: true; running: root.leader && root.connected && root.cliPath !== ""; triggeredOnStart: true; onTriggered: root.maybeRefreshConfig() }
 
   Process {
     id: collectLogsProc

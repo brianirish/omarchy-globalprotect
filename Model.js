@@ -270,6 +270,15 @@ function snapshotIsStale(ctx) {
   return false
 }
 
+// One bar per screen means one copy of the widget per screen. Exactly one of
+// them, the one on the first screen, acts on shared events: notifications,
+// tunnel restoration, Always-On, the portal refresh. The rest display and
+// take clicks. A lone or unidentified screen always acts.
+function isLeader(screenName, screenNames) {
+  if (!screenNames || screenNames.length === 0 || !screenName) return true
+  return screenName === screenNames[0]
+}
+
 // 30 s, 60 s, 120 s, ... capped at 10 min.
 function nextBackoffMs(failures) {
   var n = Math.max(1, Math.floor(Number(failures) || 0))
