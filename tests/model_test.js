@@ -9,7 +9,7 @@ const vm = require("node:vm");
 
 const src = fs.readFileSync(path.join(__dirname, "..", "Model.js"), "utf8").replace(/^\.pragma library\s*$/m, "");
 const M = {};
-vm.runInNewContext(src + "\nthis.__exports = { autoConnectDecision: typeof autoConnectDecision === 'function' ? autoConnectDecision : undefined, nextBackoffMs: typeof nextBackoffMs === 'function' ? nextBackoffMs : undefined, autoText: typeof autoText === 'function' ? autoText : undefined, tunnelDropped: typeof tunnelDropped === 'function' ? tunnelDropped : undefined, snapshotIsStale: typeof snapshotIsStale === 'function' ? snapshotIsStale : undefined, isLeader: typeof isLeader === 'function' ? isLeader : undefined, normalizeStatus, routesText, dnsText, gatewayMeta, policyChanges: typeof policyChanges === 'function' ? policyChanges : undefined, normalizePolicy: typeof normalizePolicy === 'function' ? normalizePolicy : undefined, resolverText: typeof resolverText === 'function' ? resolverText : undefined };", M);
+vm.runInNewContext(src + "\nthis.__exports = { autoConnectDecision: typeof autoConnectDecision === 'function' ? autoConnectDecision : undefined, nextBackoffMs: typeof nextBackoffMs === 'function' ? nextBackoffMs : undefined, autoText: typeof autoText === 'function' ? autoText : undefined, tunnelDropped: typeof tunnelDropped === 'function' ? tunnelDropped : undefined, snapshotIsStale: typeof snapshotIsStale === 'function' ? snapshotIsStale : undefined, isLeader: typeof isLeader === 'function' ? isLeader : undefined, manifestVersion: typeof manifestVersion === 'function' ? manifestVersion : undefined, normalizeStatus, routesText, dnsText, gatewayMeta, policyChanges: typeof policyChanges === 'function' ? policyChanges : undefined, normalizePolicy: typeof normalizePolicy === 'function' ? normalizePolicy : undefined, resolverText: typeof resolverText === 'function' ? resolverText : undefined };", M);
 const Model = M.__exports;
 
 let passed = 0;
@@ -163,6 +163,14 @@ test("a lone or unknown screen always leads", () => {
   assert.equal(Model.isLeader("", ["DP-1", "DP-3"]), true);
   assert.equal(Model.isLeader("DP-1", []), true);
   assert.equal(Model.isLeader("DP-1", null), true);
+});
+
+// The panel shows the installed version next to its title, read from manifest.json.
+test("manifestVersion reads the version and tolerates garbage", () => {
+  assert.equal(Model.manifestVersion('{"id": "x", "version": "1.0.5"}'), "1.0.5");
+  assert.equal(Model.manifestVersion('{"id": "x"}'), "");
+  assert.equal(Model.manifestVersion("not json"), "");
+  assert.equal(Model.manifestVersion(""), "");
 });
 
 console.log(passed + " passed");

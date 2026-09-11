@@ -19,6 +19,22 @@ Panel {
     var u = Qt.resolvedUrl(".").toString()
     return u.replace(/^file:\/\//, "").replace(/\/$/, "")
   }
+
+  // Installed version (manifest.json), shown small and grey beside the hero title.
+  property string version: ""
+  FileView {
+    id: manifestFile
+    path: gpPanel.pluginDir + "/manifest.json"
+    onLoaded: gpPanel.version = Model.manifestVersion(text())
+  }
+  // The hero draws its title as plain text, so the tag is placed by measuring
+  // where that title ends. Passing the sizes in keeps the bindings live.
+  function afterTitleX(titleItem, titleWidth, heroWidth, heroHeight) {
+    return titleItem.mapToItem(header, titleWidth, 0).x + Style.space(6)
+  }
+  function titleBottomY(titleItem, titleHeight, ownHeight, heroWidth, heroHeight) {
+    return titleItem.mapToItem(header, 0, 0).y + titleHeight - ownHeight - 3
+  }
   readonly property color foreground: bar ? bar.foreground : Color.foreground
   readonly property color urgent: bar ? bar.urgent : Color.urgent
   readonly property color dim: Qt.darker(foreground, 1.55)
@@ -345,6 +361,22 @@ Panel {
             implicitHeight: hero.implicitHeight
             readonly property bool ringVisible: gpPanel.cursorRow === "header"
             function focusHero() { gpPanel.cursorActive = true; gpPanel.cursorIndex = 0 }
+
+            Text {
+              id: versionTag
+              z: 1
+              // hero > labels column > title row > title text (see Ui/PanelHero.qml)
+              readonly property var titleText: (hero.children.length > 1 && hero.children[1].children.length > 0
+                                                && hero.children[1].children[0].children.length > 0)
+                                               ? hero.children[1].children[0].children[0] : null
+              visible: gpPanel.version !== "" && titleText !== null && titleText.visible
+              text: "v" + gpPanel.version
+              color: hero.dim
+              font.family: hero.fontFamily
+              font.pixelSize: Style.font.caption
+              x: titleText ? gpPanel.afterTitleX(titleText, titleText.width, hero.width, hero.height) : 0
+              y: titleText ? gpPanel.titleBottomY(titleText, titleText.height, height, hero.width, hero.height) : 0
+            }
 
             PanelHero {
               id: hero

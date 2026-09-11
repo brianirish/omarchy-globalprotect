@@ -279,6 +279,16 @@ function isLeader(screenName, screenNames) {
   return screenName === screenNames[0]
 }
 
+// The installed version, from manifest.json's text; "" when unreadable.
+function manifestVersion(text) {
+  try {
+    var v = JSON.parse(String(text || "")).version
+    return v ? String(v) : ""
+  } catch (e) {
+    return ""
+  }
+}
+
 // 30 s, 60 s, 120 s, ... capped at 10 min.
 function nextBackoffMs(failures) {
   var n = Math.max(1, Math.floor(Number(failures) || 0))
