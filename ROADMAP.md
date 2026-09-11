@@ -146,6 +146,11 @@ Everything above stable, and the widget stands on its own.
 - [x] Test coverage for every CLI code path that talks to the portal
 - [x] README and troubleshooting rewritten for the full feature set
 
+### v1.0.1 — Fix (shipped 2026-09-11)
+
+- [x] Widget loads on a cold shell start (FINAL `activeFocus` alias renamed)
+- [x] QML lint in `scripts/check`
+
 ## Beyond 1.0
 
 The hard tier, in the order they would be worth attempting:

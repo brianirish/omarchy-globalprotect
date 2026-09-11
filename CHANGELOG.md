@@ -1,5 +1,14 @@
 # Changelog
 
+## 1.0.1 — 2026-09-11
+
+- Fix: the widget failed to load on a cold shell start (login or `omarchy restart shell`)
+  with `Panel.qml:1106: Cannot override FINAL property`, so the bar showed nothing. The
+  settings field's `activeFocus` alias shadowed Item's FINAL property; hot reload had
+  accepted it, which is how it shipped. Renamed to `editing`.
+- `scripts/check` now lints the QML with `qmllint` and fails on anything the shell
+  would refuse to load.
+
 ## 1.0.0 — 2026-09-10
 
 - Every setting is now editable in the panel: *Reports as* (client OS), *Sign-in
