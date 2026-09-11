@@ -164,6 +164,10 @@ Everything above stable, and the widget stands on its own.
 - [x] One acting copy per machine: the widget on the first screen notifies, restores, and runs Always-On; the rest display
 - [x] Always-On pause shared across bars (`pause --minutes N`)
 
+### v1.0.5 — Polish (shipped 2026-09-11)
+
+- [x] Installed version shown beside the panel title
+
 ## Beyond 1.0
 
 The hard tier, in the order they would be worth attempting:

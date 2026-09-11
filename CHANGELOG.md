@@ -1,5 +1,10 @@
 # Changelog
 
+## 1.0.5 — 2026-09-11
+
+- The panel shows the installed version in small grey text beside the "GlobalProtect"
+  title, read from `manifest.json`.
+
 ## 1.0.4 — 2026-09-11
 
 - Fix: on a multi-monitor setup every connect produced two "Connected" notifications,
