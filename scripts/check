@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Project check: byte-compile the CLI, run the unit tests, validate the manifest.
+# Project check: byte-compile the CLI, run the unit tests, lint the QML, validate the manifest.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 python3 -m py_compile bin/omarchy-globalprotect
@@ -8,6 +8,20 @@ if command -v node >/dev/null; then
   node tests/model_test.js
 else
   echo "check: node not found, skipping tests/model_test.js"
+fi
+# The shell refuses a QML document that overrides a FINAL property (Item.activeFocus,
+# for one) and drops the widget from the bar; qmllint only warns, so fail on it here.
+qmllint="$(command -v qmllint || true)"
+[ -n "$qmllint" ] || [ ! -x /usr/lib/qt6/bin/qmllint ] || qmllint=/usr/lib/qt6/bin/qmllint
+if [ -n "$qmllint" ]; then
+  lint="$("$qmllint" ./*.qml 2>&1 | grep -E '^Error|final member' || true)"
+  if [ -n "$lint" ]; then
+    printf '%s\n' "$lint" >&2
+    echo "check: QML the shell would refuse to load" >&2
+    exit 1
+  fi
+else
+  echo "check: qmllint not found, skipping QML lint"
 fi
 if command -v omarchy >/dev/null && [ -f Panel.qml ]; then
   omarchy plugin validate .

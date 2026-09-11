@@ -294,7 +294,7 @@ Panel {
     PanelKeyCatcher {
       id: keyCatcher
       anchors.fill: parent
-      blocked: gpPanel.forgetOpen || portalField.activeFocus || proxyField.activeFocus || certField.activeFocus || keyField.activeFocus || mtuField.activeFocus || addPortalField.activeFocus || refreshField.activeFocus || pauseField.activeFocus
+      blocked: gpPanel.forgetOpen || portalField.activeFocus || proxyField.editing || certField.editing || keyField.editing || mtuField.editing || addPortalField.editing || refreshField.editing || pauseField.editing
       onMoveRequested: function(dx, dy) {
         if (!gpPanel.cursorActive) { gpPanel.cursorActive = true; return }
         if (dy !== 0) gpPanel.moveCursor(dy)
@@ -1103,7 +1103,7 @@ Panel {
     property string current: ""
     property bool numeric: false
     property int minimum: 0
-    property alias activeFocus: field.activeFocus
+    property alias editing: field.activeFocus
     width: parent ? parent.width : implicitWidth
     spacing: Style.space(8)
 
