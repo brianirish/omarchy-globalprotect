@@ -71,7 +71,7 @@ Panel {
 
   function activateCursor() {
     var row = cursorRow
-    if (row === "header") gp.toggle()
+    if (row === "header") gp.toggle("cursor-header")
     else if (row === "address") gp.copyAddress()
     else if (row === "rediscover") gp.rediscover()
     else if (row === "splitdns") enableSplitDns()
@@ -100,7 +100,7 @@ Panel {
 
   function switchPortal(host) {
     if (host === gp.portal || host === "") return
-    if (gp.active) gp.disconnectVpn()
+    if (gp.active) gp.disconnectVpn("switchPortal")
     saveSetting("portal", host)
     gp.flash("Portal: " + host)
     delayedPortalRefresh.restart()
@@ -236,9 +236,9 @@ Panel {
     function show(): void { gpPanel.open() }
     function hide(): void { gpPanel.close() }
     function toggle(): void { gpPanel.toggle() }
-    function connect(): string { gp.connectVpn(false); return "ok" }
-    function disconnect(): string { gp.disconnectVpn(); return "ok" }
-    function toggleVpn(): string { gp.toggle(); return "ok" }
+    function connect(): string { gp.connectVpn(false, "ipc"); return "ok" }
+    function disconnect(): string { gp.disconnectVpn("ipc"); return "ok" }
+    function toggleVpn(): string { gp.toggle("ipc"); return "ok" }
     function refresh(): string { gp.refresh(); return "ok" }
     function rediscover(): string { gp.rediscover(); return "ok" }
     function status(): string { return gp.state }
@@ -274,7 +274,7 @@ Panel {
       }
     }
     onPressed: function(buttonCode) {
-      if (buttonCode === Qt.RightButton) gp.toggle()
+      if (buttonCode === Qt.RightButton) gp.toggle("right-click")
       else if (buttonCode === Qt.MiddleButton) gp.refresh()
       else gpPanel.toggle()
     }
@@ -304,7 +304,7 @@ Panel {
       onTabRequested: function(direction) { gpPanel.switchPanel(direction) }
       onTextKey: function(t) {
         var k = String(t).toLowerCase()
-        if (k === "t") gp.toggle()
+        if (k === "t") gp.toggle("key-t")
         else if (k === "r") { gp.refresh(); gp.flash("Refreshed") }
         else if (k === "c") gp.copyAddress()
         else if (k === "s") gp.signInAgain()
@@ -368,7 +368,7 @@ Panel {
                   hasCursor: header.ringVisible
                   foreground: hero.foreground
                   onHovered: function(on) { if (on) header.focusHero() }
-                  onToggled: gp.toggle()
+                  onToggled: gp.toggle("switch")
 
                   PanelToolTip {
                     visible: powerSwitch.containsMouse

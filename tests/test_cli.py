@@ -1026,6 +1026,66 @@ class LastMeaningfulLineTests(unittest.TestCase):
         self.assertEqual(gp.last_meaningful_line(""), "")
 
 
+class DeliberateDownTests(unittest.TestCase):
+    """The tunnel is shared by every bar's widget (each bar runs its own Service), so the
+    'this teardown was ours' fact lives in the CLI's state dir where all of them read it."""
+
+    def _env(self, d):
+        return unittest.mock.patch.dict(os.environ, {"XDG_STATE_HOME": d, "XDG_RUNTIME_DIR": d})
+
+    def test_disconnect_marks_the_teardown_deliberate(self):
+        import argparse
+        with tempfile.TemporaryDirectory() as d, self._env(d):
+            with unittest.mock.patch.object(gp, "nm_down", return_value=None):
+                gp.cmd_disconnect(argparse.Namespace(pause_minutes=0))
+            self.assertEqual(gp.deliberate_down(), {"userOff": True, "pausedUntil": 0})
+
+    def test_disconnect_records_an_always_on_pause(self):
+        import argparse
+        with tempfile.TemporaryDirectory() as d, self._env(d):
+            with unittest.mock.patch.object(gp, "nm_down", return_value=None), \
+                 unittest.mock.patch.object(gp.time, "time", return_value=1_000_000):
+                gp.cmd_disconnect(argparse.Namespace(pause_minutes=30))
+            self.assertEqual(gp.deliberate_down()["pausedUntil"], (1_000_000 + 30 * 60) * 1000)
+
+    def test_failed_disconnect_leaves_no_marker(self):
+        import argparse
+        with tempfile.TemporaryDirectory() as d, self._env(d):
+            with unittest.mock.patch.object(gp, "nm_down", side_effect=gp.AuthError("nope")):
+                with self.assertRaises(SystemExit):
+                    gp.cmd_disconnect(argparse.Namespace(pause_minutes=0))
+            self.assertFalse(gp.deliberate_down()["userOff"])
+
+    def test_connect_clears_the_marker_before_anything_else(self):
+        import argparse
+        with tempfile.TemporaryDirectory() as d, self._env(d):
+            gp.mark_deliberate_down(0)
+            with unittest.mock.patch.object(gp, "resolve_portal", return_value=""):
+                with self.assertRaises(SystemExit):
+                    gp.cmd_connect(argparse.Namespace())
+            self.assertFalse(gp.deliberate_down()["userOff"])
+
+    def test_status_reports_the_marker(self):
+        with tempfile.TemporaryDirectory() as d, self._env(d):
+            gp.save_state(portal="vpn.example.com")
+            deps = {"openconnect": True, "nmOpenconnect": True, "webkit": True}
+            with unittest.mock.patch.object(gp, "check_deps", return_value=deps), \
+                 unittest.mock.patch.object(gp, "nm_connection_state", return_value="deactivated"), \
+                 unittest.mock.patch.object(gp, "nm_connectivity", return_value="full"), \
+                 unittest.mock.patch.object(gp, "split_dns_state", return_value="not-needed"), \
+                 unittest.mock.patch.object(gp, "keyring_has", return_value=False):
+                self.assertFalse(gp.status_json("vpn.example.com")["userOff"])
+                gp.mark_deliberate_down(123456)
+                s = gp.status_json("vpn.example.com")
+                self.assertTrue(s["userOff"])
+                self.assertEqual(s["pausedUntil"], 123456)
+
+    def test_marker_unreadable_means_not_deliberate(self):
+        with tempfile.TemporaryDirectory() as d, self._env(d):
+            (gp.state_dir() / "deliberate-down.json").write_text("garbage")
+            self.assertEqual(gp.deliberate_down(), {"userOff": False, "pausedUntil": 0})
+
+
 if __name__ == "__main__":
     unittest.main()
 

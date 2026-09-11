@@ -129,14 +129,21 @@ Item {
   function applyStatus(raw) {
     var s = Model.normalizeStatus(raw)
     var previous = state
-    var userOff = _desired === 0  // the intent as it was when this poll was sampled
+    // The intent as it was when this poll was sampled. Ours (_desired) covers this
+    // widget; s.userOff is the CLI's record of it, which the widget on the OTHER bar
+    // needs: each bar runs its own Service, and without it that one saw the tunnel
+    // vanish, called it an outage, and restored what the user had just switched off.
+    var userOff = _desired === 0 || s.userOff
+    if (s.pausedUntil > pausedUntil) pausedUntil = s.pausedUntil  // an Always-On pause set from any bar
     everPolled = true
     // A poll that straddles one of our own transitions reports the state from
     // before it: "disconnected" while our connect runs (the run file is the
     // truth), "connected" after our disconnect finished. Applying the latter
     // made the next real poll look like an outage, which Always-Off restored.
-    if (!Model.snapshotIsStale({ state: s.state, connecting: connectProc.running,
-                                 disconnecting: disconnectProc.running, userOff: userOff })) state = s.state
+    var stale = Model.snapshotIsStale({ state: s.state, connecting: connectProc.running,
+                                        disconnecting: disconnectProc.running, userOff: userOff })
+    if (!stale) state = s.state
+    if (stale || s.state !== previous) trace("status raw=" + s.state + " prev=" + previous + " stale=" + stale + " userOff=" + userOff)
     detail = s.detail
     reportedPortal = s.portal
     gatewayHost = s.gateway
@@ -164,6 +171,7 @@ Item {
     if (_desired !== -1 && !connectProc.running && !disconnectProc.running && connected === (_desired === 1)) _desired = -1
     if (Model.tunnelDropped({ previous: previous, state: state, disconnecting: disconnectProc.running,
                               userOff: userOff, reconnectPending: reconnectAfterDown.running })) {
+      trace("tunnelDropped -> restore")
       // Not our doing: restore it (the official client's tunnel restoration), re-signing in if the cookie expired.
       wantRestore = true
       notify("Disconnected", "The GlobalProtect tunnel went down; reconnecting", "network-vpn-disconnected")
@@ -187,7 +195,7 @@ Item {
       captiveNotified = true
       notify("Captive portal", "Sign in to this network first; GlobalProtect connects afterwards", "network-wireless-hotspot")
     }
-    if (d.action === "connect") connectVpn(false)
+    if (d.action === "connect") { trace("evaluateAuto -> connect reason=" + d.reason); connectVpn(false, "auto:" + d.reason) }
   }
 
   function pause(minutes) {
@@ -241,7 +249,8 @@ Item {
     txBytes = 0
   }
 
-  function connectVpn(fresh) {
+  function connectVpn(fresh, why) {
+    trace("connectVpn fresh=" + (fresh === true) + " why=" + (why || "?"))
     if (!configured || connectProc.running) return
     if (!depsOk) { lastError = "Install networkmanager-openconnect first"; return }
     pausedUntil = 0
@@ -254,7 +263,8 @@ Item {
     connectProc.running = true
   }
 
-  function disconnectVpn() {
+  function disconnectVpn(why) {
+    trace("disconnectVpn why=" + (why || "?"))
     if (disconnectProc.running) return
     _desired = 0
     lastError = ""
@@ -262,13 +272,14 @@ Item {
     // Turning Always-On off by hand means "leave me alone for a while" (the official client's Disable).
     if (alwaysOn) { pausedUntil = Date.now() + pauseMinutes * 60000; flash("Disconnecting · Always-On paused for " + pauseMinutes + " min") }
     if (connectProc.running) { connectProc.signal(15); return }
-    disconnectProc.command = cliArgs("disconnect")
+    disconnectProc.command = cliArgs("disconnect", alwaysOn ? ["--pause-minutes", String(pauseMinutes)] : [])
     disconnectProc.running = true
   }
 
-  function toggle() {
-    if (active) disconnectVpn()
-    else connectVpn(false)
+  function toggle(why) {
+    trace("toggle active=" + active + " why=" + (why || "?"))
+    if (active) disconnectVpn("toggle:" + (why || "?"))
+    else connectVpn(false, "toggle:" + (why || "?"))
   }
 
   function signInAgain() {
@@ -280,7 +291,7 @@ Item {
       disconnectProc.command = cliArgs("disconnect")
       disconnectProc.running = true
     } else {
-      connectVpn(true)
+      connectVpn(true, "signInAgain")
     }
   }
 
@@ -288,7 +299,7 @@ Item {
   // through the stored session, so routes and the gateway get renegotiated.
   function rediscover() {
     if (connectProc.running || disconnectProc.running) return
-    if (!connected && state !== "activating") { connectVpn(false); return }
+    if (!connected && state !== "activating") { connectVpn(false, "rediscover"); return }
     _desired = 1
     lastError = ""
     flash("Rediscovering network…")
@@ -374,6 +385,13 @@ Item {
     actionStatusTimer.restart()
   }
 
+  // One journal line per decision (journalctl --user | grep 'gp-trace'); rare events only.
+  function trace(what) {
+    console.log("gp-trace " + what + " | state=" + state + " desired=" + _desired + " alwaysOn=" + alwaysOn
+                + " restore=" + wantRestore + " paused=" + paused + " conn=" + connectProc.running
+                + " disc=" + disconnectProc.running + " rad=" + reconnectAfterDown.running)
+  }
+
   function notify(title, body, icon) {
     Quickshell.execDetached(["notify-send", "-a", "GlobalProtect", "-i", icon, "-e", title, body])
   }
@@ -403,7 +421,7 @@ Item {
   Timer { id: actionStatusTimer; interval: 2200; repeat: false; onTriggered: root.actionStatus = "" }
   // Comes back after a deliberate disconnect: fresh=true forces the sign-in
   // window (sign in again), fresh=false reuses the stored session (rediscover).
-  Timer { id: reconnectAfterDown; interval: 800; repeat: false; property bool fresh: true; onTriggered: root.connectVpn(fresh) }
+  Timer { id: reconnectAfterDown; interval: 800; repeat: false; property bool fresh: true; onTriggered: root.connectVpn(fresh, "reconnectAfterDown") }
   Timer { id: monitorRestart; interval: 3000; repeat: false; onTriggered: monitorProc.running = true }
 
   // A poll that never returns would otherwise block every later refresh.
@@ -452,6 +470,7 @@ Item {
       }
     }
     onExited: function(code) {
+      root.trace("connectProc exited code=" + code)
       if (root._desired === 0) {
         // The user turned it off mid-flight: make sure NM is not left activating.
         disconnectProc.command = root.cliArgs("disconnect")
@@ -487,6 +506,7 @@ Item {
     id: disconnectProc
     stderr: StdioCollector { id: disconnectErr; waitForEnd: true }
     onExited: function(code) {
+      root.trace("disconnectProc exited code=" + code)
       if (code !== 0) {
         root._desired = -1
         root.lastError = String(disconnectErr.text || "").replace(/^error=/m, "").trim() || "Disconnect failed"

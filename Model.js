@@ -19,6 +19,9 @@ function normalizeStatus(raw) {
   var deps = s.deps && typeof s.deps === "object" ? s.deps : {}
   return {
     state: typeof s.state === "string" && s.state !== "" ? s.state : "disconnected",
+    // Shared intent, kept by the CLI so every bar's widget agrees the last teardown was ours.
+    userOff: s.userOff === true,
+    pausedUntil: Number(s.pausedUntil) || 0,
     portal: String(s.portal || ""),
     gateway: String(s.gateway || ""),
     username: String(s.username || ""),

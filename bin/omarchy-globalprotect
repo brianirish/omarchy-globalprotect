@@ -681,6 +681,33 @@ def clear_runfile():
         pass
 
 
+def _deliberate_path():
+    return state_dir() / "deliberate-down.json"
+
+
+def mark_deliberate_down(paused_until_ms=0):
+    """Record that the coming teardown is the user's. The tunnel is shared by every
+    bar's widget (each bar runs its own Service); this is how the widget on the
+    other bar learns not to treat the drop as an outage and restore it."""
+    _deliberate_path().write_text(json.dumps({"at": int(time.time()), "pausedUntil": int(paused_until_ms or 0)}))
+
+
+def clear_deliberate_down():
+    try:
+        _deliberate_path().unlink()
+    except FileNotFoundError:
+        pass
+
+
+def deliberate_down():
+    """{'userOff': bool, 'pausedUntil': epoch ms} — the shared switch-off intent."""
+    try:
+        d = json.loads(_deliberate_path().read_text())
+        return {"userOff": True, "pausedUntil": int(d.get("pausedUntil") or 0)}
+    except (OSError, ValueError, TypeError, AttributeError):
+        return {"userOff": False, "pausedUntil": 0}
+
+
 def read_runfile():
     try:
         d = json.loads((runtime_dir() / "connect.json").read_text())
@@ -960,6 +987,7 @@ def status_json(portal):
         "detail": "",
         "deps": deps,
     }
+    out.update(deliberate_down())
     if state == "connected":
         d = nm_connection_details()
         ip = d.get("IP4.ADDRESS[1]", "").split("/")[0]
@@ -1840,6 +1868,7 @@ def _install_term_handler():
 
 def cmd_connect(args):
     _install_term_handler()
+    clear_deliberate_down()  # any connect, from any bar, means the user wants it up again
     portal = resolve_portal(args)
     if not portal:
         fail("No portal configured", 1)
@@ -1909,9 +1938,12 @@ def cmd_login(args):
 
 
 def cmd_disconnect(args):
+    minutes = int(getattr(args, "pause_minutes", 0) or 0)
+    mark_deliberate_down((int(time.time()) + minutes * 60) * 1000 if minutes > 0 else 0)
     try:
         nm_down()
     except AuthError as e:
+        clear_deliberate_down()
         fail(str(e))
 
 
@@ -2174,6 +2206,9 @@ def main(argv=None):
     ):
         sp = sub.add_parser(name, help=help_text)
         common(sp)
+        if name == "disconnect":
+            sp.add_argument("--pause-minutes", dest="pause_minutes", type=int, default=0,
+                            help="record an Always-On pause of N minutes so every bar's widget honours it")
         if name == "collect-logs":
             sp.add_argument("--output", default="", help="directory for the tarball")
         if name == "gateways":

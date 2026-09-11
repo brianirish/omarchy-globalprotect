@@ -145,4 +145,11 @@ test("an idle poll is never stale", () => {
     assert.equal(Model.snapshotIsStale({ state, connecting: false, disconnecting: false, userOff: false }), false, state);
 });
 
+test("normalizeStatus carries the shared switch-off intent and pause", () => {
+  assert.equal(Model.normalizeStatus({ userOff: true, pausedUntil: 5000 }).userOff, true);
+  assert.equal(Model.normalizeStatus({ userOff: true, pausedUntil: 5000 }).pausedUntil, 5000);
+  assert.equal(Model.normalizeStatus({}).userOff, false);
+  assert.equal(Model.normalizeStatus({}).pausedUntil, 0);
+});
+
 console.log(passed + " passed");
