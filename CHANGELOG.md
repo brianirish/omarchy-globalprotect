@@ -1,5 +1,16 @@
 # Changelog
 
+## 1.0.3 — 2026-09-11
+
+- Fix: on a multi-monitor setup, switching the VPN off brought it straight back. Each
+  bar runs its own copy of the widget, and the copy you did not click saw a connected
+  tunnel vanish, called it an outage, and reconnected. The switch-off intent now lives
+  with the tunnel: `disconnect` records a deliberate-down marker (carrying the Always-On
+  pause, if any), `connect` clears it, `status` reports `userOff` / `pausedUntil`, and
+  every bar's widget reads it before deciding a drop was not its doing. Verified live.
+- One `gp-trace` journal line per connect/disconnect decision
+  (`journalctl --user | grep gp-trace`) for the next time something looks odd.
+
 ## 1.0.2 — 2026-09-11
 
 - Fix: switching the VPN off from the open panel brought it straight back. While

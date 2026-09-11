@@ -155,6 +155,10 @@ Everything above stable, and the widget stands on its own.
 
 - [x] Switching the VPN off no longer triggers tunnel restoration (stale poll race)
 
+### v1.0.3 — Fix (shipped 2026-09-11)
+
+- [x] Switch-off intent shared through the CLI so the widget on a second bar cannot restore a deliberate disconnect
+
 ## Beyond 1.0
 
 The hard tier, in the order they would be worth attempting:
