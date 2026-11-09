@@ -1,29 +1,86 @@
-#!/usr/bin/env bash
-# Project check: byte-compile the CLI, run the unit tests, lint the QML, validate the manifest.
+#!/bin/bash
+
+# Every check CI runs, in one place, so `scripts/check` locally is exactly
+# what a pull request is held to. Needs bash, jq, node, shellcheck and
+# python3; qmllint, PyYAML and an Omarchy shell (for the API lint) are used
+# when present and skipped with a note otherwise (CI has them).
+#
+# The CLI's tests are unit tests: they never touch NetworkManager, a portal,
+# or the network, and don't need PyGObject (the CLI imports it only to draw
+# its sign-in windows).
+
 set -euo pipefail
 cd "$(dirname "$0")/.."
+
+step() { printf '\n== %s\n' "$*"; }
+
+shell_scripts=(scripts/check scripts/qml-api-lint bin/omarchy-globalprotect-enable-split-dns bin/omarchy-globalprotect-install-deps)
+
+step "Shell syntax"
+for f in "${shell_scripts[@]}" scripts/vendor/omarchy-plugin-validate; do bash -n "$f"; done
+
+step "ShellCheck"
+shellcheck "${shell_scripts[@]}"
+
+step "CLI (bin/omarchy-globalprotect): byte-compile and unit tests"
 python3 -m py_compile bin/omarchy-globalprotect
-python3 -m unittest discover -s tests -v
-if command -v node >/dev/null; then
-  node tests/model_test.js
-else
-  echo "check: node not found, skipping tests/model_test.js"
+python3 -m unittest discover -s tests
+
+step "Unit tests (Model.js)"
+node tests/model_test.js
+
+step "Plugin manifest (Omarchy's omarchy-plugin-validate)"
+bash scripts/vendor/omarchy-plugin-validate .
+
+step "Manifest identity and version"
+jq -e '.schemaVersion == 1 and .id == "brianirish.globalprotect" and (.entryPoints.barWidget | length > 0)' manifest.json >/dev/null
+manifest_version=$(jq -r .version manifest.json)
+changelog_version=$(grep -m1 -oE '^## \[[0-9]+\.[0-9]+\.[0-9]+\]' CHANGELOG.md | tr -d '[]# ')
+if [[ $manifest_version != "$changelog_version" ]]; then
+  echo "manifest.json is $manifest_version but the newest CHANGELOG.md release is $changelog_version" >&2
+  exit 1
 fi
-# The shell refuses a QML document that overrides a FINAL property (Item.activeFocus,
-# for one) and drops the widget from the bar; qmllint only warns, so fail on it here.
+echo "version $manifest_version"
+
+step "QML lint (properties the shell would refuse to load)"
+# The shell drops a widget whose QML overrides a FINAL property (Item.activeFocus,
+# for one); qmllint only warns about it, so fail on that class of message here.
 qmllint="$(command -v qmllint || true)"
-[ -n "$qmllint" ] || [ ! -x /usr/lib/qt6/bin/qmllint ] || qmllint=/usr/lib/qt6/bin/qmllint
-if [ -n "$qmllint" ]; then
-  lint="$("$qmllint" ./*.qml 2>&1 | grep -E '^Error|final member' || true)"
-  if [ -n "$lint" ]; then
+[[ -n $qmllint ]] || [[ ! -x /usr/lib/qt6/bin/qmllint ]] || qmllint=/usr/lib/qt6/bin/qmllint
+if [[ -n $qmllint ]]; then
+  if lint=$("$qmllint" ./*.qml 2>&1 | grep -E '^Error|final member'); then
     printf '%s\n' "$lint" >&2
-    echo "check: QML the shell would refuse to load" >&2
     exit 1
   fi
+  echo "clean"
 else
-  echo "check: qmllint not found, skipping QML lint"
+  echo "skipped: qmllint not installed (CI runs it)"
 fi
-if command -v omarchy >/dev/null && [ -f Panel.qml ]; then
-  omarchy plugin validate .
+
+step "QML against Omarchy's own components (qs.Ui, qs.Commons, Quickshell)"
+scripts/qml-api-lint
+
+step "QML Text elements declare textFormat (Omarchy's scanner)"
+# The scanner walks ROOT/shell, so stage the plugin's QML under a throwaway
+# root rather than editing the vendored copy.
+stage=$(mktemp -d)
+trap 'rm -rf "$stage"' EXIT
+mkdir -p "$stage/shell"
+cp ./*.qml "$stage/shell/"
+if violations=$(python3 scripts/vendor/qml-text-format-scan.py "$stage") && [[ -z $violations ]]; then
+  echo "clean"
+else
+  printf '%s\n' "$violations" >&2
+  exit 1
 fi
-echo "check: ok"
+
+step "YAML"
+if python3 -c 'import yaml' 2>/dev/null; then
+  python3 -c "import sys, yaml; [yaml.safe_load(open(f)) for f in sys.argv[1:]]" \
+    .github/ISSUE_TEMPLATE/*.yml .github/workflows/*.yml .github/dependabot.yml
+  echo "ok"
+else
+  echo "skipped: PyYAML not installed (CI runs it)"
+fi
+
+printf '\nAll checks passed.\n'

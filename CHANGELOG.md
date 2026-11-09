@@ -1,11 +1,33 @@
 # Changelog
 
-## 1.0.5 — 2026-09-11
+All notable changes to this project are documented in this file.
+
+The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
+and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
+
+## [Unreleased]
+
+### Added
+
+- Continuous integration on GitHub Actions. `scripts/check` now runs every
+  check CI runs, as named steps: the CLI's unit tests, the Model.js tests,
+  Omarchy's own plugin validator and QML `textFormat` scanner (vendored from
+  v4.5.0), `qmllint`, ShellCheck, YAML, and the manifest and CHANGELOG
+  version agreement. A second job, `scripts/qml-api-lint`, type-checks the
+  QML against a real Omarchy shell (`qs.Ui`, `qs.Commons`, Quickshell) on
+  Arch, for v4.5.0 on pull requests and the newest release weekly.
+
+### Fixed
+
+- The version tag beside the panel title and the remove-portal glyph now
+  declare `textFormat: Text.PlainText`, like every other text in the panel.
+
+## [1.0.5] - 2026-09-11
 
 - The panel shows the installed version in small grey text beside the "GlobalProtect"
   title, read from `manifest.json`.
 
-## 1.0.4 — 2026-09-11
+## [1.0.4] - 2026-09-11
 
 - Fix: on a multi-monitor setup every connect produced two "Connected" notifications,
   one per bar, and both bars ran tunnel restoration and Always-On independently. Each
@@ -19,7 +41,7 @@
 - A `gp-trace service up` journal line per bar at startup shows how many copies are
   running and which one leads.
 
-## 1.0.3 — 2026-09-11
+## [1.0.3] - 2026-09-11
 
 - Fix: on a multi-monitor setup, switching the VPN off brought it straight back. Each
   bar runs its own copy of the widget, and the copy you did not click saw a connected
@@ -30,7 +52,7 @@
 - One `gp-trace` journal line per connect/disconnect decision
   (`journalctl --user | grep gp-trace`) for the next time something looks odd.
 
-## 1.0.2 — 2026-09-11
+## [1.0.2] - 2026-09-11
 
 - Fix: switching the VPN off from the open panel brought it straight back. While
   the panel is open the widget polls every second; a poll that started just before
@@ -40,7 +62,7 @@
   snapshot is ignored while the disconnect is ours (`Model.tunnelDropped`,
   `Model.snapshotIsStale`, both unit-tested).
 
-## 1.0.1 — 2026-09-11
+## [1.0.1] - 2026-09-11
 
 - Fix: the widget failed to load on a cold shell start (login or `omarchy restart shell`)
   with `Panel.qml:1106: Cannot override FINAL property`, so the bar showed nothing. The
@@ -49,7 +71,7 @@
 - `scripts/check` now lints the QML with `qmllint` and fails on anything the shell
   would refuse to load.
 
-## 1.0.0 — 2026-09-10
+## [1.0.0] - 2026-09-10
 
 - Every setting is now editable in the panel: *Reports as* (client OS), *Sign-in
   interface*, *Refresh (s)*, and *Pause (min)* join the rest; no more `shell.json`
@@ -61,7 +83,7 @@
 - README rewritten around the full feature set, with a settings reference and a CLI
   reference.
 
-## 0.7.0 — 2026-09-10
+## [0.7.0] - 2026-09-10
 
 - Portal-driven app settings: the gateway refresh also parses `agent-config` (connect
   method, tunnel MTU, SSL-only, rediscover/sign-out permissions, welcome page, refresh
@@ -74,7 +96,7 @@
   journal; the panel shows it under *Host state* and raises warnings as notifications.
 - Welcome page: `welcome --show` opens the portal's page; `w` in the panel.
 
-## 0.6.0 — 2026-09-10
+## [0.6.0] - 2026-09-10
 
 - Tunnel DNS (`dnsMode`): the gateway's DNS servers and search domains are applied to
   the tunnel link in systemd-resolved after activation, which Omarchy's global DNS pin
@@ -85,7 +107,7 @@
   local network (`blockLan`: LAN subnets routed into the tunnel via `ipv4.routes`).
 - IPv6: `status` reports the tunnel's global IPv6 address; the Address row shows it.
 
-## 0.5.0 — 2026-09-10
+## [0.5.0] - 2026-09-10
 
 - Username/password portals (LDAP/RADIUS): when prelogin offers no SAML, a themed
   credentials dialog uses the portal's own labels; *Remember* keeps the password in the
@@ -99,7 +121,7 @@
 - Proxy (`proxy`, `--proxy`) for prelogin, config fetch, openconnect, and the NM profile.
 - Settings gains text fields for proxy, certificate, and key, and a system-browser toggle.
 
-## 0.4.0 — 2026-09-10
+## [0.4.0] - 2026-09-10
 
 - *Always-On* connect method (`connectMethod: always-on`): connects when the shell
   starts and whenever NetworkManager reports full connectivity again; failures back off
@@ -111,7 +133,7 @@
 - Model.js now has unit tests (`node tests/model_test.js`, run by `scripts/check` when
   Node is installed).
 
-## 0.3.0 — 2026-09-10
+## [0.3.0] - 2026-09-10
 
 - *Gateways* section: fetch the portal's gateway list (`gateways --refresh`, `g` key),
   see priority and TLS latency for each, and click one to prefer it. *Best available*
@@ -122,7 +144,7 @@
 - The free-text gateway field in Settings is replaced by the picker (the `gateway`
   setting key is unchanged and still accepts a name by hand in `shell.json`).
 
-## 0.2.0 — 2026-09-10
+## [0.2.0] - 2026-09-10
 
 - The NetworkManager profile is persistent (`vpn.persistent yes`): link changes and
   resume from suspend no longer tear the tunnel down; openconnect reconnects with the
@@ -141,7 +163,7 @@
 - *Debug logging* setting (`debug` in `shell.json`, `--debug` on the CLI): each connect
   step is appended to `~/.local/state/omarchy-globalprotect/debug.log` (rotated at 1 MB).
 
-## 0.1.0 — 2026-09-10
+## [0.1.0] - 2026-09-10
 
 Initial release.
 

@@ -370,6 +370,7 @@ Panel {
                                                 && hero.children[1].children[0].children.length > 0)
                                                ? hero.children[1].children[0].children[0] : null
               visible: gpPanel.version !== "" && titleText !== null && titleText.visible
+              textFormat: Text.PlainText
               text: "v" + gpPanel.version
               color: hero.dim
               font.family: hero.fontFamily
@@ -1203,6 +1204,7 @@ Panel {
 
     Text {
       visible: gatewayRow.trailingIcon !== ""
+      textFormat: Text.PlainText
       text: gatewayRow.trailingIcon
       color: gpPanel.dim
       font.family: gpPanel.fontFamily
