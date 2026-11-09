@@ -1,18 +1,61 @@
 .pragma library
 
-// Pure helpers for the GlobalProtect panel. No QML types here so the file can
-// be reasoned about (and reused) on its own.
+// Pure helpers for the GlobalProtect panel. No QML types here, so the same
+// file runs under Node for tests/model_test.js.
+//
+// Text comes from the i18n/ catalogs through `tr`, anything with t(key) and
+// tn(key, count): the panel's Commons.Translations in the shell, the
+// tests/tr.js stand-in under Node. Numbers come through `formatNumber(value,
+// decimals)` (Commons.I18n.formatNumber in the shell), so they take the
+// language's digits and decimal separator, and clock times through `clock`
+// ({ time(ms), dateTime(ms) }, the language's locale in the shell). Both
+// default to plain formatting here. Portal hosts, gateway names, addresses
+// and DNS data are passed through verbatim: they are data, shown as plain
+// text.
 
-var PHRASES = [
-  "Tunnel sealed",
-  "Packets escorted",
-  "Routes guarded",
-  "Handshake held",
-  "Keys turning",
-  "Gateway humming",
-  "Wires whispering",
-  "Portal aligned"
-]
+// Fills %1, %2, ... from values in one pass, the way QML's String.arg()
+// does, so a value that itself contains "%2" is never substituted again.
+// Node has no arg().
+function fill(template, values) {
+  return String(template).replace(/%(\d)/g, function(match, n) {
+    var value = values[Number(n) - 1]
+    return value === undefined ? match : String(value)
+  })
+}
+
+function number(value, formatNumber, decimals) {
+  if (formatNumber) return formatNumber(value, decimals)
+  return decimals === undefined ? String(value) : Number(value).toFixed(decimals)
+}
+
+function pad2(value, formatNumber) {
+  return (value < 10 ? number(0, formatNumber) : "") + number(value, formatNumber)
+}
+
+var defaultClock = {
+  time: function(ms) { return clockText(ms) },
+  dateTime: function(ms) {
+    var d = new Date(ms)
+    return (d.getMonth() + 1) + "/" + d.getDate() + " " + clockText(ms)
+  }
+}
+
+// The hero's rotating lines while connected. Each key is written out, so
+// tests/i18n_test.js can see that every one is in en.json.
+var PHRASE_COUNT = 8
+
+function phraseText(index, tr) {
+  switch (((Math.floor(Number(index) || 0) % PHRASE_COUNT) + PHRASE_COUNT) % PHRASE_COUNT) {
+    case 0: return tr.t("phrase.tunnelSealed")
+    case 1: return tr.t("phrase.packetsEscorted")
+    case 2: return tr.t("phrase.routesGuarded")
+    case 3: return tr.t("phrase.handshakeHeld")
+    case 4: return tr.t("phrase.keysTurning")
+    case 5: return tr.t("phrase.gatewayHumming")
+    case 6: return tr.t("phrase.wiresWhispering")
+    default: return tr.t("phrase.portalAligned")
+  }
+}
 
 // A boolean setting. `omarchy bar set <id> <key> true` without --json
 // stores the string "true", so the strings count as well.
@@ -66,22 +109,22 @@ function normalizeStatus(raw) {
   }
 }
 
-function stateText(state, portal) {
+function stateText(state, tr) {
   switch (state) {
-    case "unconfigured": return "Set a portal to get started"
-    case "missing-deps": return "Needs networkmanager-openconnect"
-    case "authenticating": return "Signing in…"
-    case "activating": return "Bringing the tunnel up…"
-    case "connected": return "Connected"
-    case "error": return "Something went wrong"
-    default: return "Disconnected"
+    case "unconfigured": return tr.t("state.unconfigured")
+    case "missing-deps": return fill(tr.t("state.missingDeps"), ["networkmanager-openconnect"])
+    case "authenticating": return tr.t("state.authenticating")
+    case "activating": return tr.t("state.activating")
+    case "connected": return tr.t("state.connected")
+    case "error": return tr.t("state.error")
+    default: return tr.t("state.disconnected")
   }
 }
 
 // Session rows: what the tunnel negotiated, in the official client's words.
-function tunnelText(protocol) {
-  if (protocol === "esp") return "IPSec · ESP over UDP"
-  if (protocol === "ssl") return "SSL · TCP 443"
+function tunnelText(protocol, tr) {
+  if (protocol === "esp") return tr.t("tunnel.esp")
+  if (protocol === "ssl") return tr.t("tunnel.ssl")
   return "—"
 }
 
@@ -92,10 +135,10 @@ function gatewayText(host, ip) {
   return host + " (" + ip + ")"
 }
 
-function routesText(routes, fullTunnel) {
+function routesText(routes, fullTunnel, tr) {
   if (!routes || routes.length === 0) return "—"
-  if (fullTunnel) return "Full tunnel"
-  return "Split · " + routes.join(", ")
+  if (fullTunnel) return tr.t("routes.full")
+  return fill(tr.t("routes.split"), [routes.join(", ")])
 }
 
 function dnsText(dns, domains) {
@@ -106,14 +149,14 @@ function dnsText(dns, domains) {
 }
 
 // The DNS row: what resolved actually uses on the tunnel, else what was pushed and why it is idle.
-function resolverText(resolver, pushedDns, pushedDomains, splitDns) {
+function resolverText(resolver, pushedDns, pushedDomains, splitDns, tr) {
   if (resolver && resolver.active && resolver.dns.length > 0) {
-    var scope = resolver.domains.indexOf("~.") >= 0 ? "all queries" : (resolver.domains.length > 0 ? resolver.domains.join(", ") : "")
+    var scope = resolver.domains.indexOf("~.") >= 0 ? tr.t("dns.allQueries") : (resolver.domains.length > 0 ? resolver.domains.join(", ") : "")
     return resolver.dns.join(", ") + (scope !== "" ? " · " + scope : "")
   }
   var pushed = dnsText(pushedDns, pushedDomains)
   if (pushed === "—") return "—"
-  return pushed + (splitDns === "needed" ? " · not applied" : " · idle")
+  return fill(splitDns === "needed" ? tr.t("dns.notApplied") : tr.t("dns.idle"), [pushed])
 }
 
 function addressText(ip4, ip6) {
@@ -138,9 +181,9 @@ function normalizeHostState(raw) {
   }
 }
 
-function reportsAsText(h) {
+function reportsAsText(h, tr) {
   if (!h || h.os === "") return "—"
-  return h.clientVersion !== "" ? h.os + " · client " + h.clientVersion : h.os
+  return h.clientVersion !== "" ? fill(tr.t("host.reportsAsClient"), [h.os, h.clientVersion]) : h.os
 }
 
 function hostText(h) {
@@ -149,9 +192,9 @@ function hostText(h) {
   return h.hostName + " · " + h.hostId
 }
 
-function claimsText(h) {
+function claimsText(h, tr) {
   if (!h) return "—"
-  return h.products.length > 0 ? h.products.join(", ") : "Host info only"
+  return h.products.length > 0 ? h.products.join(", ") : tr.t("host.infoOnly")
 }
 
 // Portal-driven app settings (agent-config), as parsed by the CLI.
@@ -188,13 +231,14 @@ function normalizeHipStatus(raw) {
   return { lastCheck: String(h.lastCheck || ""), lastSubmit: String(h.lastSubmit || ""), warning: String(h.warning || ""), warningAt: String(h.warningAt || "") }
 }
 
-function timestampText(iso) {
+// A journal timestamp: the time alone today, the date and time otherwise.
+function timestampText(iso, clock, nowMs) {
   if (!iso) return "—"
   var d = new Date(iso)
   if (isNaN(d.getTime())) return iso
-  var now = new Date()
-  var sameDay = d.toDateString() === now.toDateString()
-  return sameDay ? clockText(d.getTime()) : (d.getMonth() + 1) + "/" + d.getDate() + " " + clockText(d.getTime())
+  var c = clock || defaultClock
+  var now = new Date(nowMs === undefined ? Date.now() : nowMs)
+  return d.toDateString() === now.toDateString() ? c.time(d.getTime()) : c.dateTime(d.getTime())
 }
 
 // Gateways (the official client's gateway picker).
@@ -220,23 +264,23 @@ function normalizeGateways(raw) {
   }
 }
 
-function latencyText(ms) {
+function latencyText(ms, tr, formatNumber) {
   if (ms === -2 || ms === undefined || ms === null) return ""
-  if (ms < 0) return "unreachable"
-  return ms + " ms"
+  if (ms < 0) return tr.t("gateways.unreachable")
+  return number(ms, formatNumber) + " ms"
 }
 
-function priorityText(p) {
-  return p > 0 ? "P" + p : ""
+function priorityText(p, tr, formatNumber) {
+  return p > 0 ? fill(tr.t("gateways.priorityShort"), [number(p, formatNumber)]) : ""
 }
 
-function gatewayMeta(g) {
+function gatewayMeta(g, tr, formatNumber) {
   var parts = []
   if (g.host !== "" && g.host !== g.description) parts.push(g.host)
-  var pr = priorityText(g.priority)
+  var pr = priorityText(g.priority, tr, formatNumber)
   if (pr !== "") parts.push(pr)
-  if (g.manual) parts.push("manual")
-  var lt = latencyText(g.latencyMs)
+  if (g.manual) parts.push(tr.t("gateways.manual"))
+  var lt = latencyText(g.latencyMs, tr, formatNumber)
   if (lt !== "") parts.push(lt)
   return parts.join(" · ")
 }
@@ -310,31 +354,33 @@ function clockText(ms) {
 }
 
 // Hero meta line while Always-On is holding back or waiting.
-function autoText(reason, pausedUntil, nextAttemptAt, now) {
+function autoText(reason, pausedUntil, nextAttemptAt, now, tr, formatNumber, clock) {
   switch (reason) {
-    case "paused": return "Always-On paused until " + clockText(pausedUntil)
-    case "captive": return "Captive portal — sign in to the network first"
-    case "offline": return "Waiting for the network"
-    case "backoff": return "Retrying in " + Math.max(1, Math.ceil((nextAttemptAt - now) / 1000)) + "s"
+    case "paused": return fill(tr.t("auto.pausedUntil"), [(clock || defaultClock).time(pausedUntil)])
+    case "captive": return tr.t("auto.captive")
+    case "offline": return tr.t("auto.offline")
+    case "backoff": return fill(tr.t("auto.retryingIn"), [formatDuration(Math.max(1, Math.ceil((nextAttemptAt - now) / 1000)), tr, formatNumber)])
     default: return ""
   }
 }
 
-function formatBytesPerSec(n) {
+// Units (B/s, KB/s, MB/s) stay as they are in every language; the number
+// takes the language's digits and decimal separator.
+function formatBytesPerSec(n, formatNumber) {
   n = Math.max(0, Number(n) || 0)
-  if (n < 1024) return Math.round(n) + " B/s"
-  if (n < 1024 * 1024) return (n / 1024).toFixed(n < 10240 ? 1 : 0) + " KB/s"
-  return (n / (1024 * 1024)).toFixed(1) + " MB/s"
+  if (n < 1024) return number(Math.round(n), formatNumber) + " B/s"
+  if (n < 1024 * 1024) return number(n / 1024, formatNumber, n < 10240 ? 1 : 0) + " KB/s"
+  return number(n / (1024 * 1024), formatNumber, 1) + " MB/s"
 }
 
-function formatDuration(seconds) {
+function formatDuration(seconds, tr, formatNumber) {
   seconds = Math.max(0, Math.floor(Number(seconds) || 0))
   var h = Math.floor(seconds / 3600)
   var m = Math.floor((seconds % 3600) / 60)
   var s = seconds % 60
-  if (h > 0) return h + "h " + (m < 10 ? "0" : "") + m + "m"
-  if (m > 0) return m + "m " + (s < 10 ? "0" : "") + s + "s"
-  return s + "s"
+  if (h > 0) return fill(tr.t("duration.hoursMinutes"), [number(h, formatNumber), pad2(m, formatNumber)])
+  if (m > 0) return fill(tr.t("duration.minutesSeconds"), [number(m, formatNumber), pad2(s, formatNumber)])
+  return fill(tr.t("duration.seconds"), [number(s, formatNumber)])
 }
 
 function pushSample(history, value, max) {

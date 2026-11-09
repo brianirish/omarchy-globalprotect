@@ -15,6 +15,19 @@ Panel {
   ipcTarget: "brianirish.globalprotect"
   manageIpc: false
 
+  // The panel's text, from i18n/<language>.json. Calls to strings.t() stay
+  // inside bindings so Setup > Language re-renders them live.
+  Translations { id: strings; directory: Qt.resolvedUrl("i18n") }
+
+  // Numbers in the language's digits and decimal separator; clock times in
+  // its locale's short format. Both are handed to Model.js as values.
+  readonly property var num: (value, decimals) => I18n.formatNumber(value, decimals)
+  readonly property var formatLocale: Qt.locale(I18n.formatLocale)
+  readonly property var clock: ({
+    time: function(ms) { return new Date(ms).toLocaleTimeString(gpPanel.formatLocale, Locale.ShortFormat) },
+    dateTime: function(ms) { return new Date(ms).toLocaleString(gpPanel.formatLocale, Locale.ShortFormat) }
+  })
+
   readonly property string pluginDir: {
     var u = Qt.resolvedUrl(".").toString()
     return u.replace(/^file:\/\//, "").replace(/\/$/, "")
@@ -43,17 +56,21 @@ Panel {
   readonly property string fontFamily: bar ? bar.fontFamily : Style.font.family
   readonly property color barIconColor: gp.active ? barForeground : Qt.darker(barForeground, 1.55)
   readonly property string iconState: gp.state === "error" ? "error" : (gp.transitioning ? "busy" : (gp.connected ? "on" : "off"))
-  readonly property string autoMeta: gp.transitioning ? "" : Model.autoText(gp.autoReason, gp.pausedUntil, gp.nextAttemptAt, nowMs)
-  readonly property string heroMeta: gp.connected ? Model.PHRASES[phraseIndex % Model.PHRASES.length] : (autoMeta !== "" ? autoMeta : Model.stateText(gp.state, gp.portal))
-  readonly property string statusLine: gp.actionStatus !== "" ? gp.actionStatus : gp.lastError
-  readonly property bool statusIsError: gp.actionStatus === "" && gp.lastError !== ""
+  readonly property string autoMeta: gp.transitioning ? "" : Model.autoText(gp.autoReason, gp.pausedUntil, gp.nextAttemptAt, nowMs, strings, gpPanel.num, gpPanel.clock)
+  readonly property string heroMeta: gp.connected ? Model.phraseText(phraseIndex, strings) : (autoMeta !== "" ? autoMeta : Model.stateText(gp.state, strings))
+  readonly property string statusLine: gp.actionStatus !== "" ? gp.actionStatus : gp.lastErrorText
+  readonly property bool statusIsError: gp.actionStatus === "" && gp.lastErrorText !== ""
   readonly property bool showSession: gp.connected
   readonly property bool showAccount: gp.username !== "" || gp.hasSession
   readonly property bool showSetup: !gp.configured
   readonly property bool showInstall: gp.configured && gp.everPolled && !gp.depsOk
   readonly property var cursorRows: rowsForCursor()
   readonly property string cursorRow: cursorActive && cursorRows.length > 0 ? cursorRows[Math.max(0, Math.min(cursorIndex, cursorRows.length - 1))] : ""
-  readonly property string toggleHint: !gp.configured ? "Set a portal first" : (!gp.depsOk ? "Install the NetworkManager plugin first" : (gp.active ? (gp.alwaysOn ? "Disconnect and pause Always-On for " + gp.pauseMinutes + " min" : "Disconnect") : "Connect through Google SSO"))
+  readonly property string toggleHint: !gp.configured ? strings.t("hint.setPortalFirst")
+    : (!gp.depsOk ? strings.t("hint.installPluginFirst")
+    : (gp.active
+      ? (gp.alwaysOn ? Model.fill(strings.tn("hint.disconnectAndPause", gp.pauseMinutes), [gpPanel.num(gp.pauseMinutes)]) : strings.t("hint.disconnect"))
+      : strings.t("hint.connect")))
 
   property int phraseIndex: 0
   property bool cursorActive: false
@@ -113,28 +130,28 @@ Panel {
     var changes = Model.policyChanges(policy, { connectMethod: gp.alwaysOn ? "always-on" : "on-demand", mtu: gp.mtu, sslOnly: gp.sslOnly })
     var keys = Object.keys(changes)
     for (var i = 0; i < keys.length; i++) saveSetting(keys[i], changes[keys[i]])
-    if (keys.length > 0) gp.flash("Applied the portal's settings: " + keys.join(", "))
+    if (keys.length > 0) gp.flash(Model.fill(strings.t("flash.appliedPortalSettings"), [keys.join(", ")]))
   }
 
   function switchPortal(host) {
     if (host === gp.portal || host === "") return
     if (gp.active) gp.disconnectVpn("switchPortal")
     saveSetting("portal", host)
-    gp.flash("Portal: " + host)
+    gp.flash(Model.fill(strings.t("flash.portal"), [host]))
     delayedPortalRefresh.restart()
   }
 
   function removePortal(host) {
     if (host === gp.portal) return
     Quickshell.execDetached([gpPanel.pluginDir + "/bin/omarchy-globalprotect", "forget", "--portal", host, "--remove"])
-    gp.flash("Removed " + host)
+    gp.flash(Model.fill(strings.t("flash.removedPortal"), [host]))
     delayedPortalRefresh.restart()
   }
 
   function selectGateway(name) {
     if (name === gp.gateway) return
     saveSetting("gateway", name)
-    gp.flash(name === "" ? "Best available gateway" : "Preferred gateway: " + name)
+    gp.flash(name === "" ? strings.t("flash.bestGateway") : Model.fill(strings.t("flash.preferredGateway"), [name]))
   }
 
   function openForget() {
@@ -161,21 +178,21 @@ Panel {
     if (host === "") return
     saveSetting("portal", host)
     keyCatcher.forceActiveFocus()
-    gp.flash("Portal saved")
+    gp.flash(strings.t("flash.portalSaved"))
     Qt.callLater(function() { gp.refresh() })
   }
 
   function enableSplitDns() {
     if (!gpPanel.bar) return
     gpPanel.bar.run(gpPanel.pluginDir + "/bin/omarchy-globalprotect-enable-split-dns")
-    gp.flash("Installing the DNS polkit rule…")
+    gp.flash(strings.t("flash.installingDnsRule"))
     depsRecheck.restart()
   }
 
   function installDeps() {
     if (!gpPanel.bar) return
     gpPanel.bar.run(gpPanel.pluginDir + "/bin/omarchy-globalprotect-install-deps")
-    gp.flash("Installing networkmanager-openconnect…")
+    gp.flash(Model.fill(strings.t("flash.installing"), ["networkmanager-openconnect"]))
     depsRecheck.restart()
   }
 
@@ -210,6 +227,7 @@ Panel {
     id: gp
     leader: gpPanel.leader
     settings: gpPanel.settings
+    tr: strings
   }
 
   Timer { id: delayedPortalRefresh; interval: 800; repeat: false; onTriggered: gp.refresh() }
@@ -251,7 +269,7 @@ Panel {
   SequentialAnimation {
     id: phraseSwap
     PropertyAnimation { target: hero; property: "metaOpacity"; to: 0.0; duration: Style.duration(150); easing.type: Easing.OutCubic }
-    ScriptAction { script: gpPanel.phraseIndex = (gpPanel.phraseIndex + 1) % Model.PHRASES.length }
+    ScriptAction { script: gpPanel.phraseIndex = (gpPanel.phraseIndex + 1) % Model.PHRASE_COUNT }
     PropertyAnimation { target: hero; property: "metaOpacity"; to: 1.0; duration: Style.duration(200); easing.type: Easing.OutCubic }
   }
 
@@ -278,7 +296,7 @@ Panel {
     id: button
     anchors.fill: parent
     bar: gpPanel.bar
-    tooltipText: gpPanel.opened ? "" : ("GlobalProtect · " + Model.stateText(gp.state, gp.portal))
+    tooltipText: gpPanel.opened ? "" : Model.fill(strings.t("bar.tooltip"), [Model.stateText(gp.state, strings)])
     iconComponent: Component {
       Item {
         GpIcon {
@@ -338,7 +356,7 @@ Panel {
       onTextKey: function(t) {
         var k = String(t).toLowerCase()
         if (k === "t") gp.toggle("key-t")
-        else if (k === "r") { gp.refresh(); gp.flash("Refreshed") }
+        else if (k === "r") { gp.refresh(); gp.flash(strings.t("flash.refreshed")) }
         else if (k === "c") gp.copyAddress()
         else if (k === "s") gp.signInAgain()
         else if (k === "n") gp.rediscover()
@@ -457,49 +475,49 @@ Panel {
             id: sessionSection
             shown: gpPanel.showSession
 
-            PanelSectionHeader { text: "SESSION"; foreground: gpPanel.foreground; fontFamily: gpPanel.fontFamily }
+            PanelSectionHeader { text: strings.t("session.header"); foreground: gpPanel.foreground; fontFamily: gpPanel.fontFamily }
 
             InfoRow {
-              label: "Gateway"
+              label: strings.t("session.gateway")
               value: Model.gatewayText(gp.gatewayHost, gp.gatewayIp)
             }
 
             InfoRow {
-              label: "Tunnel"
-              value: Model.tunnelText(gp.protocol)
+              label: strings.t("session.tunnel")
+              value: Model.tunnelText(gp.protocol, strings)
             }
 
             InfoRow {
               id: addressRow
-              label: "Address"
+              label: strings.t("session.address")
               value: Model.addressText(gp.ip4, gp.ip6)
               iconText: ""
               hasCursor: gpPanel.cursorRow === "address"
               onActivated: gp.copyAddress()
               onHovered: function(on) { if (on) { gpPanel.cursorActive = true; gpPanel.cursorIndex = Math.max(0, gpPanel.cursorRows.indexOf("address")) } }
-              tooltip: "Copy address"
+              tooltip: strings.t("session.copyAddress")
             }
 
             InfoRow {
-              label: "Connected for"
-              value: gp.since > 0 ? Model.formatDuration(gpPanel.nowMs / 1000 - gp.since) : "—"
+              label: strings.t("session.connectedFor")
+              value: gp.since > 0 ? Model.formatDuration(gpPanel.nowMs / 1000 - gp.since, strings, gpPanel.num) : "—"
             }
 
             InfoRow {
-              label: "Routes"
-              value: Model.routesText(gp.routes, gp.fullTunnel)
+              label: strings.t("session.routes")
+              value: Model.routesText(gp.routes, gp.fullTunnel, strings)
             }
 
             InfoRow {
-              label: "DNS"
-              value: Model.resolverText(gp.resolver, gp.dns, gp.searchDomains, gp.splitDns)
+              label: strings.t("session.dns")
+              value: Model.resolverText(gp.resolver, gp.dns, gp.searchDomains, gp.splitDns, strings)
             }
 
             Button {
               visible: gp.splitDns === "needed" && gp.dnsMode !== "off"
               width: parent.width
               iconText: ""
-              text: "Enable tunnel DNS (polkit prompt)"
+              text: strings.t("session.enableDns")
               fontSize: Style.font.bodySmall
               foreground: gpPanel.foreground
               fontFamily: gpPanel.fontFamily
@@ -514,7 +532,7 @@ Panel {
               visible: gp.splitDns === "needed" && gp.dnsMode !== "off"
               textFormat: Text.PlainText
               width: parent.width
-              text: "Omarchy pins DNS globally, so the gateway's DNS is ignored and internal names will not resolve. Enabling installs a small polkit rule that lets this widget set the tunnel's DNS in systemd-resolved."
+              text: strings.t("session.dnsExplanation")
               color: gpPanel.foreground
               opacity: 0.55
               font.family: gpPanel.fontFamily
@@ -536,7 +554,7 @@ Panel {
                   width: parent.width
                   Text {
                     textFormat: Text.PlainText
-                    text: "Throughput"
+                    text: strings.t("session.throughput")
                     color: gpPanel.dim
                     font.family: gpPanel.fontFamily
                     font.pixelSize: Style.font.bodySmall
@@ -546,7 +564,7 @@ Panel {
                   Text {
                     id: rateText
                     textFormat: Text.PlainText
-                    text: "↓ " + Model.formatBytesPerSec(gp.rxRate) + "   ↑ " + Model.formatBytesPerSec(gp.txRate)
+                    text: "↓ " + Model.formatBytesPerSec(gp.rxRate, gpPanel.num) + "   ↑ " + Model.formatBytesPerSec(gp.txRate, gpPanel.num)
                     color: gpPanel.foreground
                     font.family: gpPanel.fontFamily
                     font.pixelSize: Style.font.bodySmall
@@ -608,7 +626,7 @@ Panel {
               width: parent.width
               iconText: ""
               iconSpinning: gp.transitioning
-              text: "Rediscover network"
+              text: strings.t("session.rediscover")
               fontSize: Style.font.bodySmall
               foreground: gpPanel.foreground
               fontFamily: gpPanel.fontFamily
@@ -627,12 +645,14 @@ Panel {
             id: accountSection
             shown: gpPanel.showAccount
 
-            PanelSectionHeader { text: "ACCOUNT"; foreground: gpPanel.foreground; fontFamily: gpPanel.fontFamily }
+            PanelSectionHeader { text: strings.t("account.header"); foreground: gpPanel.foreground; fontFamily: gpPanel.fontFamily }
 
             Text {
               textFormat: Text.PlainText
               width: parent.width
-              text: gp.username !== "" ? "Signed in as " + gp.username : "A portal session is stored for " + gp.portal
+              text: gp.username !== ""
+                ? Model.fill(strings.t("account.signedInAs"), [gp.username])
+                : Model.fill(strings.t("account.sessionStored"), [gp.portal])
               color: gpPanel.foreground
               font.family: gpPanel.fontFamily
               font.pixelSize: Style.font.body
@@ -649,7 +669,7 @@ Panel {
                 width: accountActions.cellWidth
                 iconText: ""
                 iconSpinning: gp.state === "authenticating"
-                text: "Sign in again"
+                text: strings.t("account.signInAgain")
                 fontSize: Style.font.bodySmall
                 foreground: gpPanel.foreground
                 fontFamily: gpPanel.fontFamily
@@ -663,7 +683,7 @@ Panel {
               Button {
                 width: accountActions.cellWidth
                 iconText: ""
-                text: "Forget session"
+                text: strings.t("account.forget")
                 fontSize: Style.font.bodySmall
                 foreground: gpPanel.foreground
                 fontFamily: gpPanel.fontFamily
@@ -679,7 +699,7 @@ Panel {
               visible: gp.welcomeAvailable
               width: parent.width
               iconText: ""
-              text: "Welcome page from " + (gp.policy.portalName !== "" ? gp.policy.portalName : gp.portal)
+              text: Model.fill(strings.t("account.welcomePage"), [gp.policy.portalName !== "" ? gp.policy.portalName : gp.portal])
               fontSize: Style.font.bodySmall
               foreground: gpPanel.foreground
               fontFamily: gpPanel.fontFamily
@@ -693,9 +713,7 @@ Panel {
             Text {
               textFormat: Text.PlainText
               width: parent.width
-              text: gp.hasSession
-                ? "Reconnects reuse the stored portal session until it expires; Google itself stays signed in inside the sign-in window."
-                : "Google stays signed in inside the sign-in window, so reconnecting usually needs no typing."
+              text: gp.hasSession ? strings.t("account.hintSession") : strings.t("account.hintNoSession")
               color: gpPanel.foreground
               opacity: 0.6
               font.family: gpPanel.fontFamily
@@ -711,7 +729,7 @@ Panel {
             id: setupSection
             shown: gpPanel.showSetup
 
-            PanelSectionHeader { text: "SETUP"; foreground: gpPanel.foreground; fontFamily: gpPanel.fontFamily }
+            PanelSectionHeader { text: strings.t("setup.header"); foreground: gpPanel.foreground; fontFamily: gpPanel.fontFamily }
 
             Row {
               id: setupRow
@@ -733,7 +751,7 @@ Panel {
               Button {
                 id: saveButton
                 anchors.verticalCenter: parent.verticalCenter
-                text: "Save"
+                text: strings.t("setup.save")
                 fontSize: Style.font.bodySmall
                 foreground: gpPanel.foreground
                 fontFamily: gpPanel.fontFamily
@@ -747,7 +765,7 @@ Panel {
             Text {
               textFormat: Text.PlainText
               width: parent.width
-              text: "Enter your company's GlobalProtect portal host, then flip the switch. Sign-in opens in its own window (Google, or a password prompt if the portal has no SSO); NetworkManager then owns the tunnel."
+              text: strings.t("setup.hint")
               color: gpPanel.foreground
               opacity: 0.6
               font.family: gpPanel.fontFamily
@@ -763,12 +781,12 @@ Panel {
             id: installSection
             shown: gpPanel.showInstall
 
-            PanelSectionHeader { text: "ONE MORE THING"; foreground: gpPanel.foreground; fontFamily: gpPanel.fontFamily }
+            PanelSectionHeader { text: strings.t("install.header"); foreground: gpPanel.foreground; fontFamily: gpPanel.fontFamily }
 
             Text {
               textFormat: Text.PlainText
               width: parent.width
-              text: "The NetworkManager OpenConnect plugin drives the tunnel. Install it once (a password prompt will appear)."
+              text: strings.t("install.explanation")
               color: gpPanel.foreground
               opacity: 0.8
               font.family: gpPanel.fontFamily
@@ -779,7 +797,7 @@ Panel {
             Button {
               width: parent.width
               iconText: ""
-              text: "Install networkmanager-openconnect"
+              text: Model.fill(strings.t("install.button"), ["networkmanager-openconnect"])
               fontSize: Style.font.bodySmall
               foreground: gpPanel.foreground
               fontFamily: gpPanel.fontFamily
@@ -799,7 +817,7 @@ Panel {
             id: portalsSection
             shown: gp.portals.length > 1
 
-            PanelSectionHeader { text: "PORTALS"; foreground: gpPanel.foreground; fontFamily: gpPanel.fontFamily }
+            PanelSectionHeader { text: strings.t("portals.header"); foreground: gpPanel.foreground; fontFamily: gpPanel.fontFamily }
 
             Repeater {
               model: gp.portals
@@ -807,7 +825,7 @@ Panel {
                 required property var modelData
                 required property int index
                 title: modelData
-                meta: modelData === gp.portal ? "current" : "click to switch"
+                meta: modelData === gp.portal ? strings.t("portals.current") : strings.t("portals.clickToSwitch")
                 selected: modelData === gp.portal
                 hasCursor: gpPanel.cursorRow === "portal:" + index
                 onActivated: gpPanel.switchPortal(modelData)
@@ -819,7 +837,7 @@ Panel {
             Text {
               textFormat: Text.PlainText
               width: parent.width
-              text: "Each portal keeps its own session, gateways, and settings from the portal. Add one in Settings."
+              text: strings.t("portals.hint")
               color: gpPanel.foreground
               opacity: 0.55
               font.family: gpPanel.fontFamily
@@ -835,11 +853,13 @@ Panel {
             id: gatewaysSection
             shown: gp.configured && gp.everPolled && gp.depsOk
 
-            PanelSectionHeader { text: "GATEWAYS"; foreground: gpPanel.foreground; fontFamily: gpPanel.fontFamily }
+            PanelSectionHeader { text: strings.t("gateways.header"); foreground: gpPanel.foreground; fontFamily: gpPanel.fontFamily }
 
             GatewayRow {
-              title: "Best available"
-              meta: gp.gatewayList.best !== "" ? "picks " + gp.gatewayList.best : (gp.gatewayList.gateways.length === 0 ? "portal decides" : "")
+              title: strings.t("gateways.best")
+              meta: gp.gatewayList.best !== ""
+                ? Model.fill(strings.t("gateways.picks"), [gp.gatewayList.best])
+                : (gp.gatewayList.gateways.length === 0 ? strings.t("gateways.portalDecides") : "")
               selected: gp.gateway === ""
               hasCursor: gpPanel.cursorRow === "gw:auto"
               onActivated: gpPanel.selectGateway("")
@@ -851,7 +871,7 @@ Panel {
                 required property var modelData
                 required property int index
                 title: modelData.description
-                meta: Model.gatewayMeta(modelData)
+                meta: Model.gatewayMeta(modelData, strings, gpPanel.num)
                 selected: gp.gateway === modelData.name
                 connectedHere: gp.connected && gp.gatewayHost === modelData.host
                 hasCursor: gpPanel.cursorRow === "gw:" + index
@@ -863,7 +883,7 @@ Panel {
               width: parent.width
               iconText: ""
               iconSpinning: gp.gatewaysBusy
-              text: gp.gatewayList.gateways.length === 0 ? "Fetch gateways from the portal" : "Refresh gateways"
+              text: gp.gatewayList.gateways.length === 0 ? strings.t("gateways.fetch") : strings.t("gateways.refresh")
               fontSize: Style.font.bodySmall
               foreground: gpPanel.foreground
               fontFamily: gpPanel.fontFamily
@@ -877,13 +897,11 @@ Panel {
             Text {
               textFormat: Text.PlainText
               width: parent.width
-              text: gp.gatewaysError !== ""
-                ? gp.gatewaysError
-                : (gp.gatewayList.gateways.length === 0
-                    ? "Fetching signs in at the portal (the Google window may flash) and lists its gateways with priority and latency."
-                    : "Best available picks the highest priority, then the lowest latency. Click a gateway to prefer it.")
-              color: gp.gatewaysError !== "" ? gpPanel.urgent : gpPanel.foreground
-              opacity: gp.gatewaysError !== "" ? 0.9 : 0.55
+              text: gp.gatewaysErrorText !== ""
+                ? gp.gatewaysErrorText
+                : (gp.gatewayList.gateways.length === 0 ? strings.t("gateways.hintFetch") : strings.t("gateways.hintPick"))
+              color: gp.gatewaysErrorText !== "" ? gpPanel.urgent : gpPanel.foreground
+              opacity: gp.gatewaysErrorText !== "" ? 0.9 : 0.55
               font.family: gpPanel.fontFamily
               font.pixelSize: Style.font.caption
               wrapMode: Text.WordWrap
@@ -897,27 +915,29 @@ Panel {
             id: hostStateSection
             shown: gp.configured && gp.everPolled && gp.depsOk
 
-            PanelSectionHeader { text: "HOST STATE"; foreground: gpPanel.foreground; fontFamily: gpPanel.fontFamily }
+            PanelSectionHeader { text: strings.t("host.header"); foreground: gpPanel.foreground; fontFamily: gpPanel.fontFamily }
 
             InfoRow {
-              label: "Reports as"
-              value: Model.reportsAsText(gp.hostState)
+              label: strings.t("host.reportsAs")
+              value: Model.reportsAsText(gp.hostState, strings)
             }
 
             InfoRow {
-              label: "Host"
+              label: strings.t("host.host")
               value: Model.hostText(gp.hostState)
             }
 
             InfoRow {
-              label: "Claims"
-              value: Model.claimsText(gp.hostState)
+              label: strings.t("host.claims")
+              value: Model.claimsText(gp.hostState, strings)
             }
 
             InfoRow {
               visible: gp.hipReport && gp.connected
-              label: "Last check"
-              value: Model.timestampText(gp.hipStatus.lastCheck) + (gp.hipStatus.lastSubmit !== "" ? " · sent " + Model.timestampText(gp.hipStatus.lastSubmit) : "")
+              label: strings.t("host.lastCheck")
+              value: gp.hipStatus.lastSubmit !== ""
+                ? Model.fill(strings.t("host.lastCheckSent"), [Model.timestampText(gp.hipStatus.lastCheck, gpPanel.clock), Model.timestampText(gp.hipStatus.lastSubmit, gpPanel.clock)])
+                : Model.timestampText(gp.hipStatus.lastCheck, gpPanel.clock)
             }
 
             Text {
@@ -937,9 +957,7 @@ Panel {
               width: parent.width
               text: gp.hostState.error !== ""
                 ? gp.hostState.error
-                : (gp.hipReport
-                    ? "This is what openconnect's hipreport.sh submits when the tunnel comes up and on the portal's check interval."
-                    : "HIP report is off: nothing is sent to the portal. Turn it on below if your portal requires a host check.")
+                : (gp.hipReport ? strings.t("host.hintOn") : strings.t("host.hintOff"))
               color: gp.hostState.error !== "" ? gpPanel.urgent : gpPanel.foreground
               opacity: gp.hostState.error !== "" ? 0.9 : 0.55
               font.family: gpPanel.fontFamily
@@ -954,12 +972,12 @@ Panel {
             id: settingsSection
             shown: gp.configured
 
-            PanelSectionHeader { text: "SETTINGS"; foreground: gpPanel.foreground; fontFamily: gpPanel.fontFamily }
+            PanelSectionHeader { text: strings.t("settings.header"); foreground: gpPanel.foreground; fontFamily: gpPanel.fontFamily }
 
             Toggle {
               width: parent.width
-              label: "HIP report"
-              description: "Send a host-integrity report if your portal requires one"
+              label: strings.t("settings.hipReport")
+              description: strings.t("settings.hipReportDescription")
               checked: gp.hipReport
               foreground: gpPanel.foreground
               fontFamily: gpPanel.fontFamily
@@ -968,10 +986,10 @@ Panel {
 
             Toggle {
               width: parent.width
-              label: "Always-On"
+              label: strings.t("settings.alwaysOn")
               description: gp.alwaysOn
-                ? "Connects at login and whenever the network returns; the switch pauses it for " + gp.pauseMinutes + " min"
-                : "Connect at login and whenever the network returns (the official client's user-logon mode)"
+                ? Model.fill(strings.tn("settings.alwaysOnOnDescription", gp.pauseMinutes), [gpPanel.num(gp.pauseMinutes)])
+                : strings.t("settings.alwaysOnOffDescription")
               checked: gp.alwaysOn
               foreground: gpPanel.foreground
               fontFamily: gpPanel.fontFamily
@@ -982,7 +1000,7 @@ Panel {
               visible: gp.alwaysOn && gp.paused
               width: parent.width
               iconText: ""
-              text: "Resume Always-On now"
+              text: strings.t("settings.resumeAlwaysOn")
               fontSize: Style.font.bodySmall
               foreground: gpPanel.foreground
               fontFamily: gpPanel.fontFamily
@@ -995,22 +1013,22 @@ Panel {
 
             Toggle {
               width: parent.width
-              label: "Follow the portal's settings"
+              label: strings.t("settings.followPortal")
               description: gp.policy.portalName !== ""
-                ? "Connect method, MTU, and SSL-only come from " + gp.policy.portalName + (gp.policy.version !== "" ? " (v" + gp.policy.version + ")" : "") + " when it says so"
-                : "Apply the connect method, MTU, and SSL-only the portal pushes (fetched with the gateway list)"
+                ? Model.fill(strings.t("settings.followPortalNamed"), [gp.policy.portalName + (gp.policy.version !== "" ? " (v" + gp.policy.version + ")" : "")])
+                : strings.t("settings.followPortalDescription")
               checked: gp.followPortal
               foreground: gpPanel.foreground
               fontFamily: gpPanel.fontFamily
               onClicked: gpPanel.saveSetting("followPortal", !gp.followPortal)
             }
 
-            SettingField { id: addPortalField; label: "Add portal"; placeholder: "vpn2.example.com"; settingKey: "portal"; current: ""; visible: gp.policy.canChangePortal }
+            SettingField { id: addPortalField; label: strings.t("settings.addPortal"); placeholder: "vpn2.example.com"; settingKey: "portal"; current: ""; visible: gp.policy.canChangePortal }
 
             Toggle {
               width: parent.width
-              label: "SSL only"
-              description: "Never use ESP over UDP; the tunnel runs over TCP 443 (slower, but survives UDP-hostile networks)"
+              label: strings.t("settings.sslOnly")
+              description: strings.t("settings.sslOnlyDescription")
               checked: gp.sslOnly
               foreground: gpPanel.foreground
               fontFamily: gpPanel.fontFamily
@@ -1019,8 +1037,8 @@ Panel {
 
             Toggle {
               width: parent.width
-              label: "No direct access to local network"
-              description: "Route the LAN's subnets into the tunnel while connected (the official client's setting of the same name)"
+              label: strings.t("settings.blockLan")
+              description: strings.t("settings.blockLanDescription")
               checked: gp.blockLan
               foreground: gpPanel.foreground
               fontFamily: gpPanel.fontFamily
@@ -1029,38 +1047,38 @@ Panel {
 
             Toggle {
               width: parent.width
-              label: "Tunnel DNS"
+              label: strings.t("settings.tunnelDns")
               description: gp.dnsMode === "auto"
-                ? "Auto: pushed domains go to the tunnel's DNS; on a full tunnel without domains, all queries do"
-                : (gp.dnsMode === "split" ? "Split: only the pushed domains use the tunnel's DNS" : "Off: the resolver is left alone")
+                ? strings.t("settings.dnsAutoDescription")
+                : (gp.dnsMode === "split" ? strings.t("settings.dnsSplitDescription") : strings.t("settings.dnsOffDescription"))
               checked: gp.dnsMode !== "off"
               foreground: gpPanel.foreground
               fontFamily: gpPanel.fontFamily
               onClicked: gpPanel.saveSetting("dnsMode", gp.dnsMode === "off" ? "auto" : (gp.dnsMode === "auto" ? "split" : "off"))
             }
 
-            SettingField { id: mtuField; label: "MTU"; placeholder: "0 = automatic"; settingKey: "mtu"; current: gp.mtu > 0 ? String(gp.mtu) : ""; numeric: true }
+            SettingField { id: mtuField; label: strings.t("settings.mtu"); placeholder: strings.t("settings.mtuPlaceholder"); settingKey: "mtu"; current: gp.mtu > 0 ? String(gp.mtu) : ""; numeric: true }
 
             Toggle {
               width: parent.width
-              label: "System browser for SAML"
+              label: strings.t("settings.systemBrowser")
               description: gp.systemBrowser
-                ? "Sign-in opens in your default browser; the portal hands the session back through a globalprotectcallback: link"
-                : "Sign in inside the widget's own window (recommended). Switch on if your portal only supports the default-browser flow"
+                ? strings.t("settings.systemBrowserOnDescription")
+                : strings.t("settings.systemBrowserOffDescription")
               checked: gp.systemBrowser
               foreground: gpPanel.foreground
               fontFamily: gpPanel.fontFamily
               onClicked: gpPanel.saveSetting("samlBrowser", gp.systemBrowser ? "embedded" : "system")
             }
 
-            SettingField { id: proxyField; label: "Proxy"; placeholder: "http://proxy.example.com:3128"; settingKey: "proxy"; current: gp.proxy }
-            SettingField { id: certField; label: "Certificate"; placeholder: "/path/to/client.pem"; settingKey: "certificate"; current: gp.certificate }
-            SettingField { id: keyField; label: "Key"; placeholder: "/path/to/client.key (if separate)"; settingKey: "certificateKey"; current: gp.certificateKey }
+            SettingField { id: proxyField; label: strings.t("settings.proxy"); placeholder: "http://proxy.example.com:3128"; settingKey: "proxy"; current: gp.proxy }
+            SettingField { id: certField; label: strings.t("settings.certificate"); placeholder: "/path/to/client.pem"; settingKey: "certificate"; current: gp.certificate }
+            SettingField { id: keyField; label: strings.t("settings.key"); placeholder: Model.fill(strings.t("settings.keyPlaceholder"), ["/path/to/client.key"]); settingKey: "certificateKey"; current: gp.certificateKey }
 
             Toggle {
               width: parent.width
-              label: "Debug logging"
-              description: "Record each connect step in ~/.local/state/omarchy-globalprotect/debug.log"
+              label: strings.t("settings.debug")
+              description: Model.fill(strings.t("settings.debugDescription"), ["~/.local/state/omarchy-globalprotect/debug.log"])
               checked: gp.debug
               foreground: gpPanel.foreground
               fontFamily: gpPanel.fontFamily
@@ -1071,7 +1089,7 @@ Panel {
               width: parent.width
               iconText: ""
               iconSpinning: gp.collectingLogs
-              text: "Collect logs"
+              text: strings.t("settings.collectLogs")
               fontSize: Style.font.bodySmall
               foreground: gpPanel.foreground
               fontFamily: gpPanel.fontFamily
@@ -1084,8 +1102,8 @@ Panel {
 
             Toggle {
               width: parent.width
-              label: "Reports as " + (gp.clientOs === "win" ? "Windows" : (gp.clientOs === "mac" ? "macOS" : "Linux"))
-              description: "The client OS sent to the portal; many portals only admit Windows and macOS. Click to cycle Windows → Linux → macOS"
+              label: Model.fill(strings.t("settings.reportsAs"), [gp.clientOs === "win" ? "Windows" : (gp.clientOs === "mac" ? "macOS" : "Linux")])
+              description: strings.t("settings.reportsAsDescription")
               checked: gp.clientOs !== "win"
               foreground: gpPanel.foreground
               fontFamily: gpPanel.fontFamily
@@ -1094,23 +1112,26 @@ Panel {
 
             Toggle {
               width: parent.width
-              label: "Sign-in interface: " + (gp.authInterface === "auto" ? "auto" : gp.authInterface)
+              label: gp.authInterface === "gateway" ? strings.t("settings.authGateway")
+                : (gp.authInterface === "portal" ? strings.t("settings.authPortal") : strings.t("settings.authAuto"))
               description: gp.authInterface === "auto"
-                ? "Probe the gateway interface first, then the portal. Click to force gateway or portal"
-                : (gp.authInterface === "gateway" ? "SAML at /ssl-vpn/prelogin.esp on the gateway host" : "SAML at /global-protect/prelogin.esp on the portal")
+                ? strings.t("settings.authAutoDescription")
+                : (gp.authInterface === "gateway"
+                    ? Model.fill(strings.t("settings.authGatewayDescription"), ["/ssl-vpn/prelogin.esp"])
+                    : Model.fill(strings.t("settings.authPortalDescription"), ["/global-protect/prelogin.esp"]))
               checked: gp.authInterface !== "auto"
               foreground: gpPanel.foreground
               fontFamily: gpPanel.fontFamily
               onClicked: gpPanel.saveSetting("authInterface", gp.authInterface === "auto" ? "gateway" : (gp.authInterface === "gateway" ? "portal" : "auto"))
             }
 
-            SettingField { id: refreshField; label: "Refresh (s)"; placeholder: "5"; settingKey: "refreshIntervalSec"; current: String(gp.refreshIntervalSec); numeric: true; minimum: 2 }
-            SettingField { id: pauseField; label: "Pause (min)"; placeholder: "30"; settingKey: "pauseMinutes"; current: String(gp.pauseMinutes); numeric: true; minimum: 1 }
+            SettingField { id: refreshField; label: strings.t("settings.refresh"); placeholder: "5"; settingKey: "refreshIntervalSec"; current: String(gp.refreshIntervalSec); numeric: true; minimum: 2 }
+            SettingField { id: pauseField; label: strings.t("settings.pause"); placeholder: "30"; settingKey: "pauseMinutes"; current: String(gp.pauseMinutes); numeric: true; minimum: 1 }
 
             Text {
               textFormat: Text.PlainText
               width: parent.width
-              text: "Portal: " + gp.portal + (gp.policy.portalName !== "" ? " (" + gp.policy.portalName + ")" : "") + "  ·  everything above is stored under this widget's entry in shell.json."
+              text: Model.fill(strings.t("settings.footer"), [gp.portal + (gp.policy.portalName !== "" ? " (" + gp.policy.portalName + ")" : ""), "shell.json"])
               color: gpPanel.foreground
               opacity: 0.55
               font.family: gpPanel.fontFamily
@@ -1126,8 +1147,8 @@ Panel {
         anchors.fill: parent
         z: 10
         opened: gpPanel.forgetOpen
-        message: "Forget the stored portal session and the Google sign-in kept for this VPN?"
-        confirmText: "Forget"
+        message: strings.t("forget.message")
+        confirmText: strings.t("forget.confirm")
         background: Color.popups.background
         foreground: gpPanel.foreground
         fontFamily: gpPanel.fontFamily

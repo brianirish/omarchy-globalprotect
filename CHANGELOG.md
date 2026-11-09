@@ -19,6 +19,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- The panel, the bar tooltip, the notifications and the status line now
+  read their text from `i18n/` catalogs through `Commons.Translations`, and
+  follow Setup > Language live, without a shell restart. Numbers, durations
+  and byte rates take the language's digits and decimal separator; the
+  Always-On pause time and HIP check times use the language's locale
+  (for example `1:05 PM` in US English) instead of a fixed `13:05`. Portal
+  hosts, gateway names, usernames, addresses and DNS entries are shown as
+  they are. Only English ships for now; the CLI's sign-in windows and error
+  messages stay English.
+- Minutes are spelled out with proper plurals ("paused for 30 minutes"),
+  and the Always-On retry countdown reads like the session timer
+  ("Retrying in 2m 00s" instead of "Retrying in 120s").
 - Motion follows Omarchy 4.5: every animation goes through
   `Style.duration()`, so `omarchy toggle animations` turns it off. Entrances
   and exits ease out (the shield's ring now draws in over 280 ms and

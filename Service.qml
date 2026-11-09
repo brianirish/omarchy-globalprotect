@@ -13,6 +13,9 @@ Item {
   property var settings: ({})
   property string cliPath: ""
   property bool panelOpen: false
+  // The panel's Commons.Translations, for the notifications and the status
+  // line's messages. The CLI's own messages (error=... lines) stay English.
+  property var tr: null
 
   function setting(name, fallback) {
     var v = settings ? settings[name] : undefined
@@ -71,7 +74,12 @@ Item {
   signal policyReceived(var policy)
   property var deps: ({ openconnect: false, nmOpenconnect: false, webkit: false })
   property string actionStatus: ""
+  // An error is either the CLI's own text (lastError) or one of ours, kept as
+  // a code (lastErrorCode) and worded in lastErrorText, so it follows a
+  // language switch while it is on screen.
   property string lastError: ""
+  property string lastErrorCode: ""
+  readonly property string lastErrorText: lastErrorCode !== "" ? errorMessage(lastErrorCode) : lastError
   property var hostState: Model.normalizeHostState(null)
   // Only the leader (the widget on the first screen; see Model.isLeader) acts
   // on shared events, so two bars do not notify, restore, or connect twice.
@@ -87,6 +95,8 @@ Item {
   readonly property bool paused: pausedUntil > Date.now()
   property var gatewayList: Model.normalizeGateways(null)
   property string gatewaysError: ""
+  property string gatewaysErrorCode: ""
+  readonly property string gatewaysErrorText: gatewaysErrorCode !== "" ? errorMessage(gatewaysErrorCode) : gatewaysError
   readonly property bool gatewaysBusy: gatewaysProc.running
   property bool everPolled: false
 
@@ -107,6 +117,27 @@ Item {
   property string reportedPortal: ""
   readonly property bool configured: portal !== "" || reportedPortal !== ""
   readonly property bool depsOk: deps.openconnect === true && deps.nmOpenconnect === true && deps.webkit === true
+
+  function errorMessage(code) {
+    if (!tr) return ""
+    switch (code) {
+      case "deps": return Model.fill(tr.t("error.installFirst"), ["networkmanager-openconnect"])
+      case "connect": return tr.t("error.connectFailed")
+      case "disconnect": return tr.t("error.disconnectFailed")
+      case "gateways": return tr.t("error.gatewaysFailed")
+      default: return ""
+    }
+  }
+
+  function setError(text, code) {
+    lastError = text || ""
+    lastErrorCode = code || ""
+  }
+
+  // Counts in the language's digits.
+  function num(value) {
+    return I18n.formatNumber(value)
+  }
 
   function cliArgs(cmd, extra) {
     var args = [cliPath, cmd, "--portal", portal, "--gateway", gateway, "--client-os", clientOs, "--auth-interface", authInterface]
@@ -178,10 +209,12 @@ Item {
       trace("tunnelDropped -> restore")
       // Not our doing: restore it (the official client's tunnel restoration), re-signing in if the cookie expired.
       wantRestore = true
-      notify("Disconnected", "The GlobalProtect tunnel went down; reconnecting", "network-vpn-disconnected")
+      notify(tr.t("notify.droppedTitle"), tr.t("notify.droppedBody"), "network-vpn-disconnected")
     }
     if (leader && state === "connected" && previous !== "connected" && previous !== "")
-      notify("Connected", gatewayHost !== "" ? "Through " + gatewayHost : "The GlobalProtect tunnel is up", "network-vpn")
+      notify(tr.t("notify.connectedTitle"),
+             gatewayHost !== "" ? Model.fill(tr.t("notify.connectedThrough"), [gatewayHost]) : tr.t("notify.connectedBody"),
+             "network-vpn")
     if (state === "connected") { wantRestore = false; failures = 0; nextAttemptAt = 0 }
     evaluateAuto()
   }
@@ -198,7 +231,7 @@ Item {
     if (connectivity === "full") captiveNotified = false
     if (d.reason === "captive" && !captiveNotified) {
       captiveNotified = true
-      notify("Captive portal", "Sign in to this network first; GlobalProtect connects afterwards", "network-wireless-hotspot")
+      notify(tr.t("notify.captiveTitle"), tr.t("notify.captiveBody"), "network-wireless-hotspot")
     }
     if (d.action === "connect") { trace("evaluateAuto -> connect reason=" + d.reason); connectVpn(false, "auto:" + d.reason) }
   }
@@ -209,7 +242,7 @@ Item {
     failures = 0
     nextAttemptAt = 0
     if (cliPath !== "") Quickshell.execDetached(cliArgs("pause", ["--minutes", String(minutes)]))  // every bar honours it
-    flash("Always-On paused for " + minutes + " min")
+    flash(Model.fill(tr.tn("flash.paused", minutes), [num(minutes)]))
     evaluateAuto()
   }
 
@@ -219,7 +252,7 @@ Item {
     nextAttemptAt = 0
     failures = 0
     if (cliPath !== "") Quickshell.execDetached(cliArgs("pause", ["--minutes", "0"]))
-    flash("Always-On resumed")
+    flash(tr.t("flash.resumed"))
     // Connect from whichever bar was clicked; the leader would otherwise wait a tick.
     if (alwaysOn && !connected && !transitioning) connectVpn(false, "resume")
     else evaluateAuto()
@@ -262,10 +295,10 @@ Item {
   function connectVpn(fresh, why) {
     trace("connectVpn fresh=" + (fresh === true) + " why=" + (why || "?"))
     if (!configured || connectProc.running) return
-    if (!depsOk) { lastError = "Install networkmanager-openconnect first"; return }
+    if (!depsOk) { setError("", "deps"); return }
     pausedUntil = 0
     _desired = 1
-    lastError = ""
+    setError("", "")
     _connectErr = ""
     actionStatus = ""
     state = "authenticating"
@@ -277,10 +310,13 @@ Item {
     trace("disconnectVpn why=" + (why || "?"))
     if (disconnectProc.running) return
     _desired = 0
-    lastError = ""
+    setError("", "")
     wantRestore = false
     // Turning Always-On off by hand means "leave me alone for a while" (the official client's Disable).
-    if (alwaysOn) { pausedUntil = Date.now() + pauseMinutes * 60000; flash("Disconnecting · Always-On paused for " + pauseMinutes + " min") }
+    if (alwaysOn) {
+      pausedUntil = Date.now() + pauseMinutes * 60000
+      flash(Model.fill(tr.tn("flash.disconnectingPaused", pauseMinutes), [num(pauseMinutes)]))
+    }
     if (connectProc.running) { connectProc.signal(15); return }
     disconnectProc.command = cliArgs("disconnect", alwaysOn ? ["--pause-minutes", String(pauseMinutes)] : [])
     disconnectProc.running = true
@@ -311,8 +347,8 @@ Item {
     if (connectProc.running || disconnectProc.running) return
     if (!connected && state !== "activating") { connectVpn(false, "rediscover"); return }
     _desired = 1
-    lastError = ""
-    flash("Rediscovering network…")
+    setError("", "")
+    flash(tr.t("flash.rediscovering"))
     reconnectAfterDown.fresh = false
     reconnectAfterDown.start()
     disconnectProc.command = cliArgs("disconnect")
@@ -363,7 +399,8 @@ Item {
   function loadGateways(refresh) {
     if (cliPath === "" || !configured || gatewaysProc.running) return
     gatewaysError = ""
-    if (refresh) flash("Fetching gateways…")
+    gatewaysErrorCode = ""
+    if (refresh) flash(tr.t("flash.fetchingGateways"))
     gatewaysProc.command = cliArgs("gateways", refresh ? ["--refresh", "--probe"] : ["--probe"])
     gatewaysProc.running = true
   }
@@ -373,7 +410,7 @@ Item {
   // The official client's "Collect Logs": a scrubbed tarball for troubleshooting.
   function collectLogs() {
     if (collectLogsProc.running) return
-    flash("Collecting logs…")
+    flash(tr.t("flash.collectingLogs"))
     collectLogsProc.command = cliArgs("collect-logs")
     collectLogsProc.running = true
   }
@@ -387,7 +424,7 @@ Item {
   function copyAddress() {
     if (ip4 === "") return
     Quickshell.execDetached(["bash", "-c", "printf %s " + Util.shellQuote(ip4) + " | wl-copy"])
-    flash("Copied " + ip4)
+    flash(Model.fill(tr.t("flash.copied"), [ip4]))
   }
 
   function flash(text) {
@@ -488,7 +525,7 @@ Item {
         disconnectProc.command = root.cliArgs("disconnect")
         disconnectProc.running = true
       } else if (code === 0) {
-        root.lastError = ""
+        root.setError("", "")
         root.failures = 0
         root.nextAttemptAt = 0
         root.wantRestore = false
@@ -498,17 +535,18 @@ Item {
         if (root.alwaysOn || root.wantRestore) {
           root.wantRestore = false
           root.pausedUntil = Date.now() + root.pauseMinutes * 60000
-          root.flash("Sign-in cancelled · Always-On paused for " + root.pauseMinutes + " min")
+          root.flash(Model.fill(root.tr.tn("flash.signInCancelledPaused", root.pauseMinutes), [root.num(root.pauseMinutes)]))
         } else {
-          root.flash("Sign-in cancelled")
+          root.flash(root.tr.t("flash.signInCancelled"))
         }
       } else {
         root._desired = -1
         root.state = "error"
-        root.lastError = root._connectErr !== "" ? root._connectErr : "Connection failed"
+        if (root._connectErr !== "") root.setError(root._connectErr, "")
+        else root.setError("", "connect")
         root.failures += 1
         root.nextAttemptAt = Date.now() + Model.nextBackoffMs(root.failures)
-        root.notify("Connection failed", root.lastError, "dialog-error")
+        root.notify(root.tr.t("notify.failedTitle"), root._connectErr !== "" ? root._connectErr : root.errorMessage("connect"), "dialog-error")
       }
       delayedRefresh.restart()
     }
@@ -521,10 +559,11 @@ Item {
       root.trace("disconnectProc exited code=" + code)
       if (code !== 0) {
         root._desired = -1
-        root.lastError = String(disconnectErr.text || "").replace(/^error=/m, "").trim() || "Disconnect failed"
+        const message = String(disconnectErr.text || "").replace(/^error=/m, "").trim()
+        root.setError(message, message !== "" ? "" : "disconnect")
       } else if (!reconnectAfterDown.running) {
         root.state = "disconnected"
-        root.notify("Disconnected", "The GlobalProtect tunnel is closed", "network-vpn-disconnected")
+        root.notify(root.tr.t("notify.disconnectedTitle"), root.tr.t("notify.disconnectedBody"), "network-vpn-disconnected")
       }
       delayedRefresh.restart()
     }
@@ -551,17 +590,20 @@ Item {
       if (code === 0 && parsed) {
         root.gatewayList = Model.normalizeGateways(parsed)
         if (String(gatewaysProc.command).indexOf("--refresh") >= 0) {
-          if (!quiet) root.flash(root.gatewayList.gateways.length + " gateway" + (root.gatewayList.gateways.length === 1 ? "" : "s") + " from the portal")
+          const count = root.gatewayList.gateways.length
+          if (!quiet) root.flash(Model.fill(root.tr.tn("flash.gatewaysFetched", count), [root.num(count)]))
           root.policy = root.gatewayList.policy
           root.policyReceived(root.gatewayList.policy)
           delayedRefresh.restart()
         }
       } else if (code === 2) {
-        root.flash("Gateway refresh cancelled")
+        root.flash(root.tr.t("flash.gatewayRefreshCancelled"))
       } else if (code === 4 || quiet) {
         // silent refresh not possible right now; try again on the next tick
       } else {
-        root.gatewaysError = String(gatewaysErr.text || "").replace(/^error=/m, "").trim() || "Could not fetch gateways"
+        const message = String(gatewaysErr.text || "").replace(/^error=/m, "").trim()
+        root.gatewaysError = message
+        root.gatewaysErrorCode = message !== "" ? "" : "gateways"
       }
     }
   }
@@ -576,7 +618,7 @@ Item {
       root.hipStatus = Model.normalizeHipStatus(parsed)
       if (root.hipStatus.warning !== "" && root.hipStatus.warningAt !== root._lastHipWarningAt) {
         root._lastHipWarningAt = root.hipStatus.warningAt
-        if (root.leader) root.notify("Host check", root.hipStatus.warning, "dialog-warning")
+        if (root.leader) root.notify(root.tr.t("notify.hostCheckTitle"), root.hipStatus.warning, "dialog-warning")
       }
     }
   }
@@ -592,10 +634,10 @@ Item {
       var m = String(collectOut.text || "").match(/^path=(.+)$/m)
       if (code === 0 && m) {
         Quickshell.execDetached(["bash", "-c", "printf %s " + Util.shellQuote(m[1]) + " | wl-copy"])
-        root.flash("Logs saved · path copied")
-        root.notify("Logs collected", m[1], "document-save")
+        root.flash(root.tr.t("flash.logsSaved"))
+        root.notify(root.tr.t("notify.logsTitle"), m[1], "document-save")
       } else {
-        root.flash(String(collectErr.text || "").replace(/^error=/m, "").trim() || "Could not collect logs")
+        root.flash(String(collectErr.text || "").replace(/^error=/m, "").trim() || root.tr.t("flash.collectFailed"))
       }
     }
   }
@@ -603,7 +645,7 @@ Item {
   Process {
     id: forgetProc
     onExited: function(code) {
-      root.flash(code === 0 ? "Session forgotten" : "Could not forget the session")
+      root.flash(code === 0 ? root.tr.t("flash.sessionForgotten") : root.tr.t("flash.forgetFailed"))
       delayedRefresh.restart()
     }
   }
