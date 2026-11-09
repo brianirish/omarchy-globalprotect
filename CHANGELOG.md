@@ -7,8 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+Requires Omarchy 4.5 or newer. On Omarchy 4.0, stay on v1.0.5
+(`git -C ~/.config/omarchy/plugins/brianirish.globalprotect checkout v1.0.5`).
+
 ### Added
 
+- The README lists every dependency by Arch package, covers enabling the
+  widget and the sign-in window's float rule, adds a Scripting section for
+  the IPC functions, and gains an Uninstall section: the plugin, its
+  NetworkManager profile, the float rule, and everything the CLI keeps in
+  `~/.local/state`, `~/.local/share`, the keyring and `/etc/polkit-1`.
+- Contributing, security and code-of-conduct guides, and issue and pull
+  request templates.
 - Continuous integration on GitHub Actions. `scripts/check` now runs every
   check CI runs, as named steps: the CLI's unit tests, the Model.js tests,
   Omarchy's own plugin validator and QML `textFormat` scanner (vendored from
@@ -26,8 +36,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Always-On pause time and HIP check times use the language's locale
   (for example `1:05 PM` in US English) instead of a fixed `13:05`. Portal
   hosts, gateway names, usernames, addresses and DNS entries are shown as
-  they are. Only English ships for now; the CLI's sign-in windows and error
-  messages stay English.
+  they are. The CLI's sign-in windows and error messages stay English.
 - Minutes are spelled out with proper plurals ("paused for 30 minutes"),
   and the Always-On retry countdown reads like the session timer
   ("Retrying in 2m 00s" instead of "Retrying in 120s").
