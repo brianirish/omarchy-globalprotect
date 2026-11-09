@@ -7,7 +7,10 @@ A native [Omarchy](https://omarchy.org) bar widget for Palo Alto GlobalProtect
 VPNs. One switch in the bar, a themed sign-in window, and NetworkManager owning
 the tunnel: no root daemon, no password prompts once set up.
 
-![The GlobalProtect panel open from the bar](preview.png)
+This is an independent, community project. It isn't affiliated with or
+endorsed by Palo Alto Networks; GlobalProtect is their trademark. The tunnel
+itself is [openconnect](https://www.infradead.org/openconnect/)'s open-source
+GlobalProtect support.
 
 It was built for Google (SAML) single sign-on and grew to cover what the
 official Linux client does: username/password portals with one-time-code
