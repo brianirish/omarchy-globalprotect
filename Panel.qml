@@ -302,9 +302,11 @@ Panel {
         GpIcon {
           id: barIcon
           anchors.centerIn: parent
-          iconSize: Style.space(11)
+          iconSize: button.iconSize
+          // The ring stays in the panel. In the bar it would count toward
+          // the icon's fitted size and shrink the shield (see GpIcon).
+          showRing: false
           color: gpPanel.barIconColor
-          ringColor: gpPanel.barForeground
           badgeColor: gpPanel.urgent
           holeColor: gpPanel.bar ? gpPanel.bar.background : Color.background
           state: gpPanel.iconState

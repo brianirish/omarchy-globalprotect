@@ -56,6 +56,15 @@ Requires Omarchy 4.5 or newer. On Omarchy 4.0, stay on v1.0.5
 
 ### Fixed
 
+- The bar icon stays the same size whatever the state. Omarchy 4.5 fits a
+  bar icon's whole drawing into one icon box, and the ring around the shield
+  counted toward it: once connected the shield shrank by a third and the
+  ring blurred to a grey hairline, and while connecting the icon pulsed in
+  size as the ring turned. The bar now shows the shield alone, bright when
+  connected and dimmed when not; the ring stays in the panel. The keyhole is
+  cut through the shield, so the bar shows through it, and the error badge
+  sits inside the shield's outline as a shape, so its border no longer
+  smears.
 - The boolean settings (`hipReport`, `debug`, `sslOnly`, `blockLan`,
   `followPortal`) accept the `"true"` and `"false"` strings that
   `omarchy bar set` stores without `--json`. Before, `omarchy bar set
