@@ -275,8 +275,12 @@ test("markup- and placeholder-shaped data passes through verbatim", () => {
   assert.equal(Model.gatewayMeta({ host: sneaky, description: "x", priority: 0, manual: false, latencyMs: -2 }, en), sneaky);
   assert.equal(Model.fill("%1 · client %2", ["%2", "6.2"]), "%2 · client 6.2");
 });
-test("a language without a string falls back to English", () => {
-  assert.equal(Model.stateText("connected", tr("da")), "Connected");
+test("a language without a catalog falls back to English", () => {
+  // "xx" has no i18n/xx.json, so every lookup reaches en.json.
+  assert.equal(Model.stateText("connected", tr("xx")), "Connected");
+});
+test("a translated catalog is used when it has the string", () => {
+  assert.notEqual(Model.stateText("connected", tr("da")), "Connected");
 });
 
 console.log(passed + " passed");
