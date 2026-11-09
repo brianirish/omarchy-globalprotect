@@ -1308,6 +1308,25 @@ Panel {
     }
   }
 
+  // The info rows' label column fits the widest label in the current
+  // language (German "Meldet sich als", Greek "Τελευταίος έλεγχος"), so rows
+  // stay aligned and labels aren't cut, within 96 to 150 px. The keys are the
+  // labels the session and host rows use.
+  FontMetrics {
+    id: infoLabelMetrics
+    font.family: gpPanel.fontFamily
+    font.pixelSize: Style.font.bodySmall
+  }
+  readonly property real infoLabelWidth: {
+    var labels = [strings.t("session.address"), strings.t("session.connectedFor"), strings.t("session.dns"),
+                  strings.t("session.gateway"), strings.t("session.routes"), strings.t("session.tunnel"),
+                  strings.t("host.claims"), strings.t("host.host"), strings.t("host.lastCheck"), strings.t("host.reportsAs")]
+    var font = infoLabelMetrics.font
+    var widest = 0
+    for (var i = 0; i < labels.length; i++) widest = Math.max(widest, infoLabelMetrics.advanceWidth(labels[i]))
+    return Math.ceil(Math.min(Style.space(150), Math.max(Style.space(96), widest + 1)))
+  }
+
   component InfoRow: CursorSurface {
     id: infoRow
     property string label: ""
@@ -1350,7 +1369,7 @@ Panel {
         color: gpPanel.dim
         font.family: gpPanel.fontFamily
         font.pixelSize: Style.font.bodySmall
-        width: Style.space(96)
+        width: gpPanel.infoLabelWidth
         elide: Text.ElideRight
         anchors.verticalCenter: parent.verticalCenter
       }
@@ -1361,7 +1380,7 @@ Panel {
         color: gpPanel.foreground
         font.family: gpPanel.fontFamily
         font.pixelSize: Style.font.body
-        width: parent.width - Style.space(96) - parent.spacing - (rowIcon.visible ? rowIcon.width + parent.spacing : 0)
+        width: parent.width - gpPanel.infoLabelWidth - parent.spacing - (rowIcon.visible ? rowIcon.width + parent.spacing : 0)
         elide: Text.ElideMiddle
         anchors.verticalCenter: parent.verticalCenter
       }
