@@ -22,19 +22,19 @@ Item {
   readonly property string portal: Model.cleanPortalHost(setting("portal", ""))
   readonly property string gateway: String(setting("gateway", "")).trim()
   readonly property string clientOs: ["win", "linux", "mac"].indexOf(String(setting("clientOs", "win"))) >= 0 ? String(setting("clientOs", "win")) : "win"
-  readonly property bool hipReport: setting("hipReport", false) === true
+  readonly property bool hipReport: Model.flag(setting("hipReport", false), false)
   readonly property string authInterface: ["auto", "portal", "gateway"].indexOf(String(setting("authInterface", "auto"))) >= 0 ? String(setting("authInterface", "auto")) : "auto"
-  readonly property bool debug: setting("debug", false) === true
+  readonly property bool debug: Model.flag(setting("debug", false), false)
   readonly property bool alwaysOn: String(setting("connectMethod", "on-demand")) === "always-on"
   readonly property bool systemBrowser: String(setting("samlBrowser", "embedded")) === "system"
   readonly property string proxy: String(setting("proxy", "")).trim()
   readonly property string certificate: String(setting("certificate", "")).trim()
   readonly property string certificateKey: String(setting("certificateKey", "")).trim()
   readonly property string dnsMode: ["auto", "split", "off"].indexOf(String(setting("dnsMode", "auto"))) >= 0 ? String(setting("dnsMode", "auto")) : "auto"
-  readonly property bool sslOnly: setting("sslOnly", false) === true
+  readonly property bool sslOnly: Model.flag(setting("sslOnly", false), false)
   readonly property int mtu: Math.max(0, parseInt(String(setting("mtu", 0)), 10) || 0)
-  readonly property bool blockLan: setting("blockLan", false) === true
-  readonly property bool followPortal: setting("followPortal", true) !== false
+  readonly property bool blockLan: Model.flag(setting("blockLan", false), false)
+  readonly property bool followPortal: Model.flag(setting("followPortal", true), true)
   readonly property int pauseMinutes: Math.min(1440, Math.max(1, parseInt(String(setting("pauseMinutes", 30)), 10) || 30))
   readonly property int refreshIntervalSec: Math.min(120, Math.max(2, parseInt(String(setting("refreshIntervalSec", 5)), 10) || 5))
 

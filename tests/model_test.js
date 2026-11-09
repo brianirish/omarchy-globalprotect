@@ -7,10 +7,10 @@ const fs = require("node:fs");
 const path = require("node:path");
 const vm = require("node:vm");
 
+// Its top-level functions and vars become properties of the context object.
 const src = fs.readFileSync(path.join(__dirname, "..", "Model.js"), "utf8").replace(/^\.pragma library\s*$/m, "");
-const M = {};
-vm.runInNewContext(src + "\nthis.__exports = { autoConnectDecision: typeof autoConnectDecision === 'function' ? autoConnectDecision : undefined, nextBackoffMs: typeof nextBackoffMs === 'function' ? nextBackoffMs : undefined, autoText: typeof autoText === 'function' ? autoText : undefined, tunnelDropped: typeof tunnelDropped === 'function' ? tunnelDropped : undefined, snapshotIsStale: typeof snapshotIsStale === 'function' ? snapshotIsStale : undefined, isLeader: typeof isLeader === 'function' ? isLeader : undefined, manifestVersion: typeof manifestVersion === 'function' ? manifestVersion : undefined, normalizeStatus, routesText, dnsText, gatewayMeta, policyChanges: typeof policyChanges === 'function' ? policyChanges : undefined, normalizePolicy: typeof normalizePolicy === 'function' ? normalizePolicy : undefined, resolverText: typeof resolverText === 'function' ? resolverText : undefined };", M);
-const Model = M.__exports;
+const Model = {};
+vm.runInNewContext(src, Model);
 
 let passed = 0;
 function test(name, fn) {
@@ -171,6 +171,18 @@ test("manifestVersion reads the version and tolerates garbage", () => {
   assert.equal(Model.manifestVersion('{"id": "x"}'), "");
   assert.equal(Model.manifestVersion("not json"), "");
   assert.equal(Model.manifestVersion(""), "");
+});
+
+// Boolean settings: `omarchy bar set` without --json stores "true"/"false" strings.
+test("flag reads booleans and the strings omarchy bar set stores", () => {
+  assert.equal(Model.flag(true, false), true);
+  assert.equal(Model.flag("true", false), true);
+  assert.equal(Model.flag(false, true), false);
+  assert.equal(Model.flag("false", true), false);
+});
+test("flag falls back for anything else", () => {
+  for (const v of [undefined, null, "", "yes", 1, 0])
+    assert.equal(Model.flag(v, true), true, String(v));
 });
 
 console.log(passed + " passed");

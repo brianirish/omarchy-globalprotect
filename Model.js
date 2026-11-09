@@ -14,6 +14,14 @@ var PHRASES = [
   "Portal aligned"
 ]
 
+// A boolean setting. `omarchy bar set <id> <key> true` without --json
+// stores the string "true", so the strings count as well.
+function flag(value, fallback) {
+  if (value === true || value === "true") return true
+  if (value === false || value === "false") return false
+  return fallback
+}
+
 function normalizeStatus(raw) {
   var s = raw && typeof raw === "object" ? raw : {}
   var deps = s.deps && typeof s.deps === "object" ? s.deps : {}

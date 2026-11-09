@@ -32,6 +32,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- The boolean settings (`hipReport`, `debug`, `sslOnly`, `blockLan`,
+  `followPortal`) accept the `"true"` and `"false"` strings that
+  `omarchy bar set` stores without `--json`. Before, `omarchy bar set
+  brianirish.globalprotect hipReport true` left HIP reports off, and
+  `followPortal false` left it on.
 - In a right-to-left language the version tag sits before the panel title
   instead of on top of the shield icon.
 - The version tag beside the panel title and the remove-portal glyph now
