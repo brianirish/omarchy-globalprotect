@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.0.0] - 2026-11-09
+
 Requires Omarchy 4.5 or newer. On Omarchy 4.0, stay on v1.0.5
 (`git -C ~/.config/omarchy/plugins/brianirish.globalprotect checkout v1.0.5`).
 
@@ -31,7 +33,8 @@ Requires Omarchy 4.5 or newer. On Omarchy 4.0, stay on v1.0.5
 
 - The panel, the bar tooltip, the notifications and the status line now
   read their text from `i18n/` catalogs through `Commons.Translations`, and
-  follow Setup > Language live, without a shell restart. Numbers, durations
+  follow Setup > Language live, without a shell restart, in all 50 Omarchy
+  languages (machine-translated from English; corrections welcome). Numbers, durations
   and byte rates take the language's digits and decimal separator; the
   Always-On pause time and HIP check times use the language's locale
   (for example `1:05 PM` in US English) instead of a fixed `13:05`. Portal
