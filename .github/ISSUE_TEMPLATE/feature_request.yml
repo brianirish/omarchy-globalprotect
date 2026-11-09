@@ -1,0 +1,16 @@
+name: Feature request
+description: Suggest an improvement to the widget
+labels: [enhancement]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: What's missing or awkward?
+      description: Describe what you're trying to do. If the official GlobalProtect client does it, say how it behaves there.
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed solution
+      description: What would you like the widget to do? Mockups welcome. Leave out your portal's hostname.

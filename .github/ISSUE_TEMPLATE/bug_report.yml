@@ -1,0 +1,56 @@
+name: Bug report
+description: The widget, the sign-in, or the tunnel is missing, wrong, or misbehaving
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for the report! Security problems should go through
+        [private vulnerability reporting](../../security/advisories/new) instead.
+
+        **This is a public issue, and VPN logs identify your employer.** Before
+        pasting anything, replace your portal and gateway hostnames, your
+        username or email, internal IP addresses and DNS names with placeholders
+        such as `vpn.example.com` and `user@example.com`. Never paste cookies,
+        passwords or one-time codes. The *Collect logs* bundle masks cookies and
+        passwords but still names your portal, so don't attach it as it is.
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened?
+      description: What did you do, what did you expect, and what happened instead?
+    validations:
+      required: true
+  - type: dropdown
+    id: sign-in
+    attributes:
+      label: How does your portal sign you in?
+      options:
+        - Google or another SAML provider, in the widget's window
+        - SAML in the system browser (samlBrowser = system)
+        - Username and password
+        - Username, password and a one-time code
+        - Client certificate
+        - Not sure
+    validations:
+      required: true
+  - type: textarea
+    id: versions
+    attributes:
+      label: Versions
+      description: Output of `omarchy version`, `openconnect --version | head -1`, `pacman -Q networkmanager-openconnect`, and your plugin commit (`git -C ~/.config/omarchy/plugins/brianirish.globalprotect log -1 --oneline`).
+      render: text
+    validations:
+      required: true
+  - type: textarea
+    id: status
+    attributes:
+      label: Status
+      description: "Output of `~/.config/omarchy/plugins/brianirish.globalprotect/bin/omarchy-globalprotect status`, with the portal, gateway, username, addresses and DNS redacted."
+      render: json
+  - type: textarea
+    id: logs
+    attributes:
+      label: Relevant logs (redacted)
+      description: "Turn on *Debug logging* in the panel and reproduce first. Useful: `journalctl --user --since '10 minutes ago' | grep -i -e qml -e gp-trace -e globalprotect`, `journalctl -u NetworkManager --since '10 minutes ago'`, and `~/.local/state/omarchy-globalprotect/debug.log`. Redact hostnames, usernames, IPs and DNS names as described above."
+      render: text
