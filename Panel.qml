@@ -28,9 +28,11 @@ Panel {
     onLoaded: gpPanel.version = Model.manifestVersion(text())
   }
   // The hero draws its title as plain text, so the tag is placed by measuring
-  // where that title ends. Passing the sizes in keeps the bindings live.
-  function afterTitleX(titleItem, titleWidth, heroWidth, heroHeight) {
-    return titleItem.mapToItem(header, titleWidth, 0).x + Style.space(6)
+  // where that title ends: after it, or before it in a mirrored
+  // (right-to-left) panel. Passing the sizes in keeps the bindings live.
+  function afterTitleX(titleItem, titleWidth, ownWidth, mirrored, heroWidth, heroHeight) {
+    var left = titleItem.mapToItem(header, 0, 0).x
+    return mirrored ? left - Style.space(6) - ownWidth : left + titleWidth + Style.space(6)
   }
   function titleBottomY(titleItem, titleHeight, ownHeight, heroWidth, heroHeight) {
     return titleItem.mapToItem(header, 0, 0).y + titleHeight - ownHeight - 3
@@ -244,14 +246,19 @@ Panel {
     onTriggered: phraseSwap.restart()
   }
 
+  // The stock Tailscale panel's phrase swap: a quick fade out, the next
+  // phrase, a slightly longer fade in, both easing out.
   SequentialAnimation {
     id: phraseSwap
-    PropertyAnimation { target: hero; property: "metaOpacity"; to: 0.0; duration: 180; easing.type: Easing.OutQuad }
+    PropertyAnimation { target: hero; property: "metaOpacity"; to: 0.0; duration: Style.duration(150); easing.type: Easing.OutCubic }
     ScriptAction { script: gpPanel.phraseIndex = (gpPanel.phraseIndex + 1) % Model.PHRASES.length }
-    PropertyAnimation { target: hero; property: "metaOpacity"; to: 1.0; duration: 260; easing.type: Easing.InQuad }
+    PropertyAnimation { target: hero; property: "metaOpacity"; to: 1.0; duration: Style.duration(200); easing.type: Easing.OutCubic }
   }
 
-  IpcHandler {
+  // ShellIpc answers on the shell's own socket as well as qs ipc, so
+  // `omarchy-shell brianirish.globalprotect connect` works. manageIpc is off
+  // because this one handler owns the target, panel functions included.
+  ShellIpc {
     target: gpPanel.ipcTarget
     function open(): void { gpPanel.open() }
     function close(): void { gpPanel.close() }
@@ -283,14 +290,18 @@ Panel {
           badgeColor: gpPanel.urgent
           holeColor: gpPanel.bar ? gpPanel.bar.background : Color.background
           state: gpPanel.iconState
-          Behavior on color { ColorAnimation { duration: 160 } }
+          Behavior on color { ColorAnimation { duration: Style.duration(160); easing.type: Easing.OutCubic } }
 
+          // Breathes while connecting, as the Tailscale panel's account
+          // switch does. A loop, not an entrance, so it keeps that panel's
+          // symmetric curve; it stays still when animations are off, since a
+          // looping animation with no duration would flicker.
           SequentialAnimation {
-            running: gp.transitioning
+            running: gp.transitioning && !Style.reduceMotion
             loops: Animation.Infinite
             onStopped: barIcon.opacity = 1.0
-            NumberAnimation { target: barIcon; property: "opacity"; to: 0.45; duration: 420; easing.type: Easing.InOutQuad }
-            NumberAnimation { target: barIcon; property: "opacity"; to: 1.0; duration: 420; easing.type: Easing.InOutQuad }
+            NumberAnimation { target: barIcon; property: "opacity"; to: 0.45; duration: Style.duration(420); easing.type: Easing.InOutQuad }
+            NumberAnimation { target: barIcon; property: "opacity"; to: 1.0; duration: Style.duration(420); easing.type: Easing.InOutQuad }
           }
         }
       }
@@ -375,7 +386,7 @@ Panel {
               color: hero.dim
               font.family: hero.fontFamily
               font.pixelSize: Style.font.caption
-              x: titleText ? gpPanel.afterTitleX(titleText, titleText.width, hero.width, hero.height) : 0
+              x: titleText ? gpPanel.afterTitleX(titleText, titleText.width, width, LayoutMirroring.enabled, hero.width, hero.height) : 0
               y: titleText ? gpPanel.titleBottomY(titleText, titleText.height, height, hero.width, hero.height) : 0
             }
 
@@ -395,7 +406,7 @@ Panel {
                   badgeColor: gpPanel.urgent
                   holeColor: Color.popups.background
                   state: gpPanel.iconState
-                  Behavior on color { ColorAnimation { duration: 160 } }
+                  Behavior on color { ColorAnimation { duration: Style.duration(160); easing.type: Easing.OutCubic } }
                 }
               }
               trailingControl: Component {
@@ -431,8 +442,12 @@ Panel {
             font.family: gpPanel.fontFamily
             font.pixelSize: Style.font.bodySmall
             wrapMode: Text.WordWrap
-            Behavior on opacity { NumberAnimation { duration: 180; easing.type: Easing.OutCubic } }
-            Behavior on color { ColorAnimation { duration: 160 } }
+            // In a little slower than out, as the shell's own panels fade.
+            Behavior on opacity {
+              id: statusFade
+              NumberAnimation { duration: Style.duration(statusFade.targetValue > 0 ? 180 : 120); easing.type: Easing.OutCubic }
+            }
+            Behavior on color { ColorAnimation { duration: Style.duration(160); easing.type: Easing.OutCubic } }
           }
 
           // ---------- Session ----------
@@ -1130,7 +1145,10 @@ Panel {
     spacing: Style.space(10)
     visible: opacity > 0.01
     opacity: shown ? 1 : 0
-    Behavior on opacity { NumberAnimation { duration: 160; easing.type: Easing.OutCubic } }
+    Behavior on opacity {
+      id: sectionFade
+      NumberAnimation { duration: Style.duration(sectionFade.targetValue > 0 ? 180 : 120); easing.type: Easing.OutCubic }
+    }
   }
 
   // One labelled text field bound to a settings key; saves on Enter or focus loss.
@@ -1236,7 +1254,7 @@ Panel {
         font.pixelSize: Style.font.bodySmall
         width: Style.space(16)
         anchors.verticalCenter: parent.verticalCenter
-        Behavior on color { ColorAnimation { duration: 120 } }
+        Behavior on color { ColorAnimation { duration: Style.duration(120); easing.type: Easing.OutCubic } }
       }
 
       Column {
@@ -1336,7 +1354,7 @@ Panel {
         font.family: gpPanel.fontFamily
         font.pixelSize: Style.font.bodySmall
         anchors.verticalCenter: parent.verticalCenter
-        Behavior on color { ColorAnimation { duration: 120 } }
+        Behavior on color { ColorAnimation { duration: Style.duration(120); easing.type: Easing.OutCubic } }
       }
     }
   }

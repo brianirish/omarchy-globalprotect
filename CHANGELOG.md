@@ -17,8 +17,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   QML against a real Omarchy shell (`qs.Ui`, `qs.Commons`, Quickshell) on
   Arch, for v4.5.0 on pull requests and the newest release weekly.
 
+### Changed
+
+- Motion follows Omarchy 4.5: every animation goes through
+  `Style.duration()`, so `omarchy toggle animations` turns it off. Entrances
+  and exits ease out (the shield's ring now draws in over 280 ms and
+  withdraws in 180 ms instead of a 360 ms in-out sweep; the hero phrases swap
+  with the Tailscale panel's fade). The connecting pulse on the bar icon and
+  the orbiting ring stop when animations are off, and the orbit turns at a
+  steady speed like the shell's own spinners.
+- The IPC target is now a `ShellIpc`, so
+  `omarchy-shell brianirish.globalprotect <connect|disconnect|toggleVpn|refresh|rediscover|status>`
+  answers on the shell's own socket, as well as through `qs ipc`.
+
 ### Fixed
 
+- In a right-to-left language the version tag sits before the panel title
+  instead of on top of the shield icon.
 - The version tag beside the panel title and the remove-portal glyph now
   declare `textFormat: Text.PlainText`, like every other text in the panel.
 

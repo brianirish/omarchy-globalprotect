@@ -28,14 +28,26 @@ Item {
   property real ringSweep: on ? 360 : (busy ? 100 : 0)
   readonly property real bodyOpacity: (state === "off") ? 0.55 : 1.0
 
-  Behavior on ringSweep { NumberAnimation { duration: 360; easing.type: Easing.InOutCubic } }
+  // The ring draws in as the connection starts and seals, and withdraws a
+  // little faster when it ends. Style.duration() makes both instant when the
+  // user has turned animations off.
+  Behavior on ringSweep {
+    id: sweepBehavior
+    NumberAnimation {
+      // targetValue is set before the animation starts, so this reads the
+      // direction of the change rather than racing the state bindings.
+      duration: Style.duration(sweepBehavior.targetValue > 0 ? 280 : 180)
+      easing.type: Easing.Bezier
+      easing.bezierCurve: Style.easeOut
+    }
+  }
 
   Shape {
     id: shield
     anchors.fill: parent
     preferredRendererType: Shape.CurveRenderer
     opacity: root.bodyOpacity
-    Behavior on opacity { NumberAnimation { duration: 160; easing.type: Easing.OutCubic } }
+    Behavior on opacity { NumberAnimation { duration: Style.duration(160); easing.type: Easing.OutCubic } }
 
     ShapePath {
       strokeWidth: 0
@@ -94,7 +106,7 @@ Item {
     preferredRendererType: Shape.CurveRenderer
     visible: root.ringSweep > 0.5
     opacity: root.on ? 0.38 : 1.0
-    Behavior on opacity { NumberAnimation { duration: 360; easing.type: Easing.InOutCubic } }
+    Behavior on opacity { NumberAnimation { duration: Style.duration(280); easing.type: Easing.OutCubic } }
 
     ShapePath {
       strokeColor: root.ringColor
@@ -111,14 +123,16 @@ Item {
       }
     }
 
+    // A steady orbit while connecting, like the shell's own spinners. It
+    // stays still when animations are off: a looping animation with no
+    // duration would spin flat out. The partial ring still says "busy".
     NumberAnimation on rotation {
       id: orbit
       from: 0
       to: 360
-      duration: 1100
+      duration: Style.duration(1100)
       loops: Animation.Infinite
-      running: root.busy
-      easing.type: Easing.InOutCubic
+      running: root.busy && !Style.reduceMotion
     }
 
     onRotationChanged: if (!root.busy && rotation !== 0 && !rotationReset.running) rotationReset.start()
@@ -128,7 +142,7 @@ Item {
       target: ring
       property: "rotation"
       to: 0
-      duration: 240
+      duration: Style.duration(240)
       easing.type: Easing.OutCubic
     }
   }
