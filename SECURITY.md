@@ -16,9 +16,6 @@ GitHub's private vulnerability reporting:
 
 **[Report a vulnerability](https://github.com/brianirish/omarchy-globalprotect/security/advisories/new)**
 
-If that page isn't available to you, email **irishb@gmail.com** with
-"omarchy-globalprotect security" in the subject.
-
 You should get a response within a week. Please include reproduction steps,
 the Omarchy version (`omarchy version`) and the plugin commit
 (`git -C ~/.config/omarchy/plugins/brianirish.globalprotect log -1 --oneline`).
