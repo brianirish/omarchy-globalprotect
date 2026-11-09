@@ -1,8 +1,16 @@
 # Omarchy GlobalProtect
 
+[![CI](https://github.com/brianirish/omarchy-globalprotect/actions/workflows/ci.yml/badge.svg)](https://github.com/brianirish/omarchy-globalprotect/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+
 A native [Omarchy](https://omarchy.org) bar widget for Palo Alto GlobalProtect
 VPNs. One switch in the bar, a themed sign-in window, and NetworkManager owning
 the tunnel: no root daemon, no password prompts once set up.
+
+This is an independent, community project. It isn't affiliated with or
+endorsed by Palo Alto Networks; GlobalProtect is their trademark. The tunnel
+itself is [openconnect](https://www.infradead.org/openconnect/)'s open-source
+GlobalProtect support.
 
 It was built for Google (SAML) single sign-on and grew to cover what the
 official Linux client does: username/password portals with one-time-code
@@ -30,27 +38,77 @@ comparison.
   multiple portals; HIP notifications; welcome page.
 - **Troubleshooting**: host state view (what the HIP report claims), debug log, and
   a scrubbed log bundle.
-- **Keyboard-first** like the stock panels.
+- **Keyboard-first** like the stock panels, and scriptable over the shell's IPC.
+- **Follows Omarchy's language** (Setup > Language) live; see
+  [Translations](#translations).
+
+## Requirements
+
+- **Omarchy 4.5 or newer.** 2.0 uses the shell IPC, motion and translation
+  APIs that 4.5 introduced. On Omarchy 4.0, stay on the last 1.x release:
+
+  ```bash
+  git -C ~/.config/omarchy/plugins/brianirish.globalprotect checkout v1.0.5
+  ```
+
+  (`omarchy plugin update` would move you back to 2.x, so update Omarchy
+  first.)
+- A Palo Alto GlobalProtect portal that signs in with SAML (Google or any
+  other identity provider), a username and password (with or without a
+  one-time code), or a client certificate.
+- The packages below. Only `networkmanager-openconnect` is not already on a
+  stock Omarchy install.
+
+| Package | Used for |
+|---------|----------|
+| `networkmanager-openconnect` | The NetworkManager VPN plugin that runs the tunnel. Pulls in `openconnect`, which also does the sign-in handshake. **Install this one.** |
+| `networkmanager`, `systemd` (systemd-resolved) | Owning the tunnel, and the tunnel's DNS. |
+| `python`, `python-gobject`, `gtk3`, `webkit2gtk-4.1` | The CLI and its sign-in, password and welcome-page windows. |
+| `libsecret`, `gnome-keyring` | Keeping the portal session and remembered passwords in the keyring (`secret-tool`). |
+| `libnotify`, `wl-clipboard` | Notifications (`notify-send`) and copying the address or log path (`wl-copy`). |
+| `polkit` | The prompts behind the panel's *Install* and *Enable tunnel DNS* buttons (`pkexec`). |
+| `xdg-utils` | Only for signing in through the system browser (`xdg-mime`). |
 
 ## Install
 
 ```bash
-omarchy plugin add https://github.com/brianirish/omarchy-globalprotect.git --enable --yes
+omarchy plugin add https://github.com/brianirish/omarchy-globalprotect.git --enable
 ```
 
-The widget lands in the bar's right section (`omarchy bar move brianirish.globalprotect --section <left|center|right>` to move it).
-
-It needs the NetworkManager OpenConnect plugin from the official Arch repos. The
-panel offers an *Install* button (a polkit prompt appears); the equivalent command is:
+`omarchy plugin add` asks before installing, since plugins run unsandboxed in
+the shell; add `--yes` to skip the question. `--enable` puts the widget on the
+bar straight away, in the right section. Without it, enable it later:
 
 ```bash
-pkexec pacman -S --needed networkmanager-openconnect
+omarchy plugin enable brianirish.globalprotect
+omarchy bar move brianirish.globalprotect --section left   # optional: left, centerBegin, centerEnd, right
 ```
 
-Everything else is already part of Omarchy: `openconnect` (pulled in by that
-package), NetworkManager with systemd-resolved, Python with PyGObject, GTK 3,
-WebKitGTK, `secret-tool`, `notify-send`, and `wl-copy`. Node is optional (it runs
-the Model.js tests).
+Then install the NetworkManager OpenConnect plugin from the official Arch
+repos. The panel offers an *Install* button that does this behind a polkit
+prompt; the equivalent command is:
+
+```bash
+sudo pacman -S --needed networkmanager-openconnect
+```
+
+On a system that isn't a stock Omarchy install, check the rest of the
+[requirements](#requirements) too:
+
+```bash
+sudo pacman -S --needed networkmanager-openconnect python-gobject gtk3 webkit2gtk-4.1 libsecret libnotify wl-clipboard
+```
+
+### Keep the sign-in window floating
+
+The sign-in window has the class `omarchy-globalprotect`. To keep it floating
+and centered rather than tiled, add this rule to `~/.config/hypr/hyprland.lua`
+(Hyprland reloads it on save):
+
+```lua
+-- GlobalProtect sign-in window (brianirish.globalprotect)
+o.window({ class = "^omarchy-globalprotect$" }, { float = true, center = true, size = "480 720" })
+```
 
 ## First run
 
@@ -62,16 +120,16 @@ the Model.js tests).
 4. Optional: press `g` to fetch the portal's gateways and app settings, and click
    *Enable tunnel DNS* if the DNS row says "not applied".
 
-To keep the sign-in window floating and centered, add this to `~/.config/hypr/hyprland.lua`:
-
-```lua
-o.window({ class = "^omarchy-globalprotect$" }, { float = true, center = true, size = "480 720" })
-```
-
 ## Settings
 
 Every setting is editable in the panel's *Settings* section and stored under this
-widget's entry in `~/.config/omarchy/shell.json`.
+widget's entry in `~/.config/omarchy/shell.json`. They can also be set from a
+terminal, and the widget picks the change up live:
+
+```bash
+omarchy bar set brianirish.globalprotect connectMethod always-on
+omarchy bar set brianirish.globalprotect hipReport true   # "true"/"false" strings work for the on/off settings
+```
 
 | Key | Panel control | Default | What it does |
 |-----|---------------|---------|--------------|
@@ -99,6 +157,23 @@ widget's entry in `~/.config/omarchy/shell.json`.
 address, `n` rediscovers the network, `g` fetches or refreshes gateways, `p` pauses
 or resumes Always-On, `w` shows the portal's welcome page, `l` collects logs, `s`
 signs in again, `f` forgets the session, `Esc` closes, `Tab` switches panels.
+
+## Scripting
+
+The widget answers on the shell's IPC, so a Hyprland binding or a script can
+drive it without opening the panel:
+
+```bash
+omarchy-shell brianirish.globalprotect toggleVpn    # connect or disconnect
+omarchy-shell brianirish.globalprotect connect
+omarchy-shell brianirish.globalprotect disconnect
+omarchy-shell brianirish.globalprotect rediscover   # drop and renegotiate the tunnel
+omarchy-shell brianirish.globalprotect refresh
+omarchy-shell brianirish.globalprotect status       # disconnected, authenticating, activating, connected, error, ...
+omarchy-shell brianirish.globalprotect toggle       # open or close the panel (also open, close)
+```
+
+`qs ipc call brianirish.globalprotect <function>` works too.
 
 ## Command line
 
@@ -150,12 +225,29 @@ Where things live:
 | Settings | this widget's entry in `~/.config/omarchy/shell.json` |
 | Current portal | `~/.local/state/omarchy-globalprotect/state.json` |
 | Per-portal username, gateway, gateway list, portal settings | `~/.local/state/omarchy-globalprotect/portals/<host>.json` |
-| Debug log | `~/.local/state/omarchy-globalprotect/debug.log` |
+| Debug log, shared Always-On pause and switch-off marker | `~/.local/state/omarchy-globalprotect/` |
+| Connect progress, password hand-off file, browser callback pipe | `$XDG_RUNTIME_DIR/omarchy-globalprotect/` (0700, gone at logout) |
+| *Collect logs* bundles | `~/Downloads/omarchy-globalprotect-logs-<date>.tar.gz` |
 | Google session (WebKit website data) | `~/.local/share/omarchy-globalprotect/webkit/` (0700) |
 | Portal session cookie, remembered passwords | GNOME keyring, `application=omarchy-globalprotect` |
 | System-browser callback handler | `~/.local/share/applications/omarchy-globalprotect-callback.desktop` |
 | Tunnel DNS polkit rule (optional, installed on request) | `/etc/polkit-1/rules.d/50-omarchy-globalprotect-resolved.rules` |
 | NetworkManager profile | `nmcli connection show GlobalProtect` |
+
+## Translations
+
+The panel's text, the bar tooltip, the notifications and the status line come
+from the catalogs in [`i18n/`](i18n), one per Omarchy language, and follow
+Setup > Language without a shell restart. Numbers, durations and rates use the
+language's digits and decimal separator, and clock times its locale. Portal
+hosts, gateway names, usernames, addresses and DNS entries are shown as they
+are.
+
+`en.json` is the source; the other catalogs are machine-translated, so
+corrections from native speakers are very welcome: edit `i18n/<code>.json` and
+open a pull request. A string missing from a catalog falls back to English.
+The CLI's own messages (the sign-in windows and the errors it reports into
+the panel) are English for now.
 
 ## Troubleshooting
 
@@ -183,14 +275,66 @@ Where things live:
 ## Development
 
 ```bash
-scripts/check          # py_compile + Python unit tests + Model.js tests (node) + omarchy plugin validate
+scripts/check          # every check CI runs: CLI and Model.js unit tests, translations, qmllint, validator, ShellCheck
 ```
+
+`scripts/check` needs bash, jq, node, shellcheck and python3 (qmllint and
+PyYAML are used when installed). Its tests never touch a portal, the network
+or NetworkManager. On an Omarchy machine it also type-checks the QML against
+the installed shell's own components (`scripts/qml-api-lint`), and CI does the
+same against the supported Omarchy release and, weekly, the newest one.
 
 The plugin directory is a plain git checkout; the shell hot-reloads QML on save
 (run `omarchy restart shell` if a changed component type is still cached). Design
 decisions are logged in `docs/superpowers/specs/`, the original build plan in
-`docs/superpowers/plans/`, and the version plan in `ROADMAP.md`.
+`docs/superpowers/plans/`, and the version plan in `ROADMAP.md`. See
+[CONTRIBUTING.md](CONTRIBUTING.md) for how to add a string or a test, and
+[SECURITY.md](SECURITY.md) to report a vulnerability privately.
+
+## Uninstall
+
+1. Switch the VPN off, then *Forget session* in the panel's Account section.
+   That clears the portal session and remembered passwords from the keyring
+   and the sign-in window's saved Google login.
+2. Remove the plugin. This also takes its entry, and with it every setting,
+   out of `~/.config/omarchy/shell.json`:
+
+   ```bash
+   omarchy plugin remove brianirish.globalprotect
+   ```
+
+3. Delete the NetworkManager profile the widget created:
+
+   ```bash
+   nmcli connection delete GlobalProtect
+   ```
+
+4. Remove the sign-in window rule from `~/.config/hypr/hyprland.lua`, if you
+   added it.
+5. Delete what the CLI keeps in your home directory:
+
+   ```bash
+   rm -rf ~/.local/state/omarchy-globalprotect ~/.local/share/omarchy-globalprotect
+   secret-tool clear application omarchy-globalprotect   # keyring entries, if step 1 was skipped
+   rm -f ~/.local/share/applications/omarchy-globalprotect-callback.desktop
+   sed -i '/globalprotectcallback/d' ~/.config/mimeapps.list   # only if you used the system-browser sign-in
+   rm -f ~/Downloads/omarchy-globalprotect-logs-*.tar.gz       # bundles from Collect logs
+   ```
+
+   `$XDG_RUNTIME_DIR/omarchy-globalprotect/` holds only run files and is
+   cleared when you log out.
+6. If you enabled tunnel DNS, remove its polkit rule:
+
+   ```bash
+   sudo rm /etc/polkit-1/rules.d/50-omarchy-globalprotect-resolved.rules
+   ```
+
+7. Optionally, remove the VPN plugin if nothing else uses it:
+
+   ```bash
+   sudo pacman -Rns networkmanager-openconnect
+   ```
 
 ## License
 
-MIT
+[MIT](LICENSE)
